@@ -1,0 +1,27 @@
+{
+  "name": "siwes360backend",
+  "version": "1.0.0",
+  "description": "\"Backend for A SIWES Logbook app\"",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Mofiyinfoluwa Ebo",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "express-fileupload": "^1.5.2",
+    "express-flash": "^0.0.2",
+    "express-jwt": "^8.5.1",
+    "express-session": "^1.18.2",
+    "express-validator": "^7.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "method-override": "^3.0.0",
+    "mysql2": "^3.14.2",
+    "nodemailer": "^7.0.5",
+    "otp-generator": "^4.0.1",
+    "pluralize": "^8.0.0"
+  }
+}
