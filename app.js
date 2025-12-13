@@ -1,12 +1,10 @@
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3001;
-const { resolve } = require('path');
-const fileUpload = require('express-fileupload');
-const methodOverride = require('method-override');
-const session = require('express-session');
-const flash = require('connect-flash');
+const express = require("express");
+const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
+
+const app = express();
+
 
 // 🔑 Middlewares
 const verifyToken = require('./middlewares/verifyToken');
@@ -20,36 +18,32 @@ const logRoutes = require("./routes/logRoutes");
 const gradeRoutes = require("./routes/gradeRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 
-// Middleware setup
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(fileUpload({
-    useTempFiles: true,
-    createParentPath: true,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+
+// Middleware
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-app.use(session({
-    secret: process.env.SESSION_SECRET || "what is your name",
-    resave: false,
-    saveUninitialized: true,
-}));
-app.use(flash());
-app.use(methodOverride('_method'));
+// Increase payload size limits
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-app.use(express.static(resolve('assets')));
-app.use(express.static(resolve('uploads')));
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Request logging middleware
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    if (req.body && Object.keys(req.body).length > 0) {
-        console.log('Body:', req.body);
-    }
-    if (req.files && Object.keys(req.files).length > 0) {
-        console.log('Files:', Object.keys(req.files));
-    }
-    next();
+  const timestamp = new Date().toISOString();
+  console.log(`${timestamp} - ${req.method} ${req.path}`);
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log('Body:', req.body);
+  }
+  if (req.files) {
+    console.log('Files:', req.files.map(f => f.fieldname));
+  }
+  next();
 });
 
 // =======================
@@ -109,6 +103,7 @@ app.use((req, res) => {
 });
 
 // Start server
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`🌐 Server URL: http://localhost:${PORT}`);

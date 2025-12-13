@@ -1,109 +1,98 @@
-const connection = require('./Connection');
-const pluralize = require('pluralize');
+const connection = require("./Connection");
+
 class Model {
-    static async query(sql, values = []) {
-        values = Array.isArray(values) ? values : [values];
-        values = values.map(v => v === undefined ? null : v);
-        return (await connection.execute(sql, values))[0];
+  static async query(sql, params = []) {
+    try {
+      const [rows] = await connection.execute(sql, params);
+      return rows;
+    } catch (error) {
+      console.error("Database query error:", error);
+      throw error;
     }
+  }
 
-    async query(sql, values = []) {
-        return await this.constructor.query(sql, values);
-    }
+  static get table() {
+    // Default: pluralize class name and lowercase
+    return this.name.toLowerCase() + 's';
+  }
 
-    static async columns() {
-        const sql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_NAME = ?`;
-        const rows = await this.query(sql, this.tableName);
-        return rows.map(row => row.COLUMN_NAME);
-    }
-    async columns() {
-        return await this.constructor.columns();
-    }
+  static async fetch() {
+    console.log(`Fetching from table: ${this.table}`); // ADD THIS DEBUG LINE
+    const sql = `SELECT * FROM ${this.table}`;
+    return await this.query(sql);
+  }
 
-    static get tableName() {
-        return pluralize(this.name.toLowerCase())
-    }
+  static async find(id) {
+    console.log(`Finding in table: ${this.table}`); // ADD THIS DEBUG LINE
+    const sql = `SELECT * FROM ${this.table} WHERE id = ? OR user_id = ?`;
+    const rows = await this.query(sql, [id, id]);
+    return rows[0];
+  }
 
-    static fill(obj = {}) {
-        const data = new this()
-        for (const key in obj) {
-            data[key] = obj[key];
-        }
-        return data
-    }
+  static fill(data) {
+    const instance = new this();
+    Object.assign(instance, data);
+    return instance;
+  }
 
-    fill(obj = {}) {
-        for (const key in obj) {
-            this[key] = obj[key];
-        }
-    }
+  async insert() {
+    const keys = Object.keys(this).filter(key => this[key] !== undefined && key !== 'id');
+    const values = keys.map(key => this[key]);
+    const placeholders = keys.map(() => '?').join(', ');
+    const columns = keys.join(', ');
 
-    async insert() {
-        const fields = Object.keys(this);
-        const values = Object.values(this);
-        const placeholders = '?'.repeat(values.length).split('').join(', ')
-        const sql = `INSERT INTO ${this.constructor.tableName} (${fields.join(', ')}) VALUES (${placeholders})`;
-        const rows = await this.query(sql, values);
-        this.id = rows.insertId;
-        return this;
+    const tableName = this.constructor.table; // USE THIS
+    console.log(`Inserting into table: ${tableName}`); // ADD THIS DEBUG LINE
+    const sql = `INSERT INTO ${tableName} (${columns}) VALUES (${placeholders})`;
+    
+    console.log('SQL:', sql); // ADD THIS DEBUG LINE
+    console.log('Values:', values); // ADD THIS DEBUG LINE
+    
+    try {
+      const [result] = await connection.execute(sql, values);
+      this.id = result.insertId;
+      return this;
+    } catch (error) {
+      console.error('Insert error:', error);
+      throw error;
     }
+  }
 
+  async update() {
+    const keys = Object.keys(this).filter(key => this[key] !== undefined && key !== 'id' && key !== 'user_id');
+    const setClause = keys.map(key => `${key} = ?`).join(', ');
+    const values = keys.map(key => this[key]);
 
-    async update() {
-        const obj = this
-        const id = this.id
-        delete obj.id
-        delete obj.created_at
-        delete obj.updated_at
-        const fields = Object.keys(obj);
-        const values = Object.values(obj);
-        const placeholders = fields.map(f => `${f} = ?`).join(', ')
-        const sql = `UPDATE ${this.constructor.tableName} SET ${placeholders} WHERE id = ?`;
-        const result = await this.query(sql, [...values, id]);
-        return result.affectedRows > 0;
+    const idKey = this.user_id ? 'user_id' : 'id';
+    const idValue = this.user_id || this.id;
+    
+    const tableName = this.constructor.table; // USE THIS
+    console.log(`Updating table: ${tableName}`); // ADD THIS DEBUG LINE
+    const sql = `UPDATE ${tableName} SET ${setClause} WHERE ${idKey} = ?`;
+    values.push(idValue);
+
+    try {
+      await connection.execute(sql, values);
+      return this;
+    } catch (error) {
+      console.error('Update error:', error);
+      throw error;
     }
+  }
 
-    async save() {
-        return this.id ? this.update() : this.insert();
+  static async delete(id) {
+    const tableName = this.table; // USE THIS
+    console.log(`Deleting from table: ${tableName}`); // ADD THIS DEBUG LINE
+    const sql = `DELETE FROM ${tableName} WHERE id = ? OR user_id = ?`;
+    
+    try {
+      const [result] = await connection.execute(sql, [id, id]);
+      return result.affectedRows > 0;
+    } catch (error) {
+      console.error('Delete error:', error);
+      throw error;
     }
-
-    static async fetch() {
-        let results = [];
-        const sql = `SELECT * FROM ${this.tableName}`;
-        const rows = await this.query(sql);
-        for (const row of rows) {
-            const program = this.fill(row);
-            results.push(program);
-        }
-        return results;
-    }
-
-    static async find(id) {
-        const sql = `SELECT * FROM ${this.tableName} WHERE id = ?`;
-        const rows = await this.query(sql, id);
-        if (rows.length === 0) {
-            return null;
-        }
-        return this.fill(rows[0]);
-    }
-
-    async delete() {
-        const sql = `DELETE FROM ${this.constructor.tableName} WHERE id = ?`;
-        const res = await this.query(sql, this.id);
-        return res.affectedRows > 0;
-    }
-
-    static async delete(id) {
-        const sql = `DELETE FROM ${this.tableName} WHERE id = ?`;
-        const res = await this.query(sql, id);
-        return res.affectedRows > 0;
-    }
-
-    static async count() {
-        const sql = `SELECT COUNT(id) AS count FROM ${this.tableName}`;
-        const rows = await this.query(sql);
-        return rows[0].count
-    }
+  }
 }
 
-module.exports = Model
+module.exports = Model;

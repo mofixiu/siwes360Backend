@@ -1,14 +1,13 @@
 const { Router } = require("express");
 const router = Router();
-
-const { apiLogin } = require("../controllers/userController");
-const { storeUser} = require("../controllers/userController");
-// const {  verifyEmail, resendOtp } = require("../controllers/userController");
+const { login, register, getProfile } = require("../controllers/authController");
+const verifyToken = require("../middlewares/verifyToken");
 
 // Public routes
-router.post("/login", apiLogin);
-router.post("/register", storeUser);
-// router.post("/verify-email", verifyEmail);
-// router.post("/resend-otp", resendOtp);
+router.post("/login", login);
+router.post("/register", register);
+
+// Protected routes
+router.get("/profile", verifyToken, getProfile);
 
 module.exports = router;
