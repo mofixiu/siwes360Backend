@@ -3,6 +3,7 @@ const Dailylog = require("../models/Dailylog");
 const LogAttachment = require("../models/LogAttachment");
 const fs = require('fs').promises;
 const path = require('path');
+const { createNotification } = require('./notificationController');
 
 const storeDailyLog = async (req, res) => {
     try {
@@ -91,13 +92,11 @@ const storeDailyLog = async (req, res) => {
             JOIN users u ON s.user_id = u.id
             WHERE s.user_id = ?
         `;
-        const [studentRows] = await Dailylog.query(studentSql, [student_id]);
+        const studentRows = await Dailylog.query(studentSql, [student_id]);
         const student = studentRows[0];
 
         // Create notification for supervisor if student has one
         if (student && student.supervisor_id) {
-            const Notification = require("../models/Notification");
-            
             // Format the log date for display (from YYYY-MM-DD to readable format)
             const dateObj = new Date(log_date + 'T00:00:00'); // Add time to avoid timezone issues
             const formattedDate = dateObj.toLocaleDateString('en-US', {
@@ -106,12 +105,12 @@ const storeDailyLog = async (req, res) => {
                 day: 'numeric'
             });
             
-            const notification = Notification.fill({
-                user_id: student.supervisor_id,
-                message: `${student.student_name} (${student.matric_no}) submitted a new log entry for ${formattedDate}`,
-                is_read: false,
-            });
-            await notification.insert();
+            // Use the notification helper function
+            await createNotification(
+                student.supervisor_id,
+                `${student.student_name} (${student.matric_no}) submitted a new log entry for ${formattedDate}`,
+                'logbook'
+            );
             console.log('Notification created for supervisor');
         }
         
@@ -263,23 +262,72 @@ const partialDailylogUpdate = async (req, res) => {
   let { id } = req.params;
   
   try {
-    const dailylog = await Dailylog.find(id);
-    if (!dailylog) {
+    // First check if the log exists
+    const checkSql = "SELECT id FROM daily_logs WHERE id = ?";
+    const existingLogs = await Dailylog.query(checkSql, [id]);
+    
+    if (!existingLogs || existingLogs.length === 0) {
       return res.status(404).json({
         status: "error",
         message: "Dailylog not found",
       });
     }
+
+    // Build dynamic UPDATE query based on provided fields
+    const updateFields = [];
+    const updateValues = [];
     
-    dailylog.fill(req.body);
-    await dailylog.update();
+    if (req.body.description !== undefined) {
+      updateFields.push('description = ?');
+      updateValues.push(req.body.description);
+    }
+    if (req.body.skills_acquired !== undefined) {
+      updateFields.push('skills_acquired = ?');
+      updateValues.push(req.body.skills_acquired);
+    }
+    if (req.body.challenges_faced !== undefined) {
+      updateFields.push('challenges_faced = ?');
+      updateValues.push(req.body.challenges_faced);
+    }
+    if (req.body.log_date !== undefined) {
+      updateFields.push('log_date = ?');
+      updateValues.push(req.body.log_date);
+    }
+    if (req.body.status !== undefined) {
+      updateFields.push('status = ?');
+      updateValues.push(req.body.status);
+    }
+    if (req.body.supervisor_comment !== undefined) {
+      updateFields.push('supervisor_comment = ?');
+      updateValues.push(req.body.supervisor_comment);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "No fields to update",
+      });
+    }
+
+    // Add updated_at timestamp
+    updateFields.push('updated_at = NOW()');
+    
+    // Add the id to the end of values array for the WHERE clause
+    updateValues.push(id);
+
+    const updateSql = `UPDATE daily_logs SET ${updateFields.join(', ')} WHERE id = ?`;
+    await Dailylog.query(updateSql, updateValues);
+
+    // Fetch the updated log
+    const updatedLog = await Dailylog.find(id);
 
     res.json({
       status: "success",
       message: "Dailylog updated successfully",
-      data: dailylog,
+      data: updatedLog,
     });
   } catch (error) {
+    console.error('Partial update error:', error);
     res.status(500).json({
       status: "error",
       message: "Failed to update dailylog: " + error.message,
@@ -296,6 +344,37 @@ const approveDailyLog = async (req, res) => {
     await Dailylog.query(sql, [supervisor_comment || null, id]);
     
     const dailylog = await Dailylog.find(id);
+    
+    // ✅ ONLY ADDITION: Create notification for student
+    const studentSql = `
+      SELECT 
+        s.user_id as student_id,
+        u.full_name as student_name,
+        DATE_FORMAT(dl.log_date, '%Y-%m-%d') as formatted_date
+      FROM daily_logs dl
+      JOIN students s ON dl.student_id = s.user_id
+      JOIN users u ON s.user_id = u.id
+      WHERE dl.id = ?
+    `;
+    const studentRows = await Dailylog.query(studentSql, [id]);
+    const student = studentRows[0];
+
+    if (student) {
+      const dateObj = new Date(student.formatted_date + 'T00:00:00');
+      const formattedDate = dateObj.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      await createNotification(
+        student.student_id,
+        `Your log entry for ${formattedDate} has been approved${supervisor_comment ? ' with feedback' : ''}`,
+        'approval'
+      );
+      console.log('✅ Notification sent to student');
+    }
+    // ✅ END OF ADDITION
     
     res.json({
       status: "success",
@@ -326,6 +405,37 @@ const rejectDailyLog = async (req, res) => {
     await Dailylog.query(sql, [supervisor_comment, id]);
     
     const dailylog = await Dailylog.find(id);
+    
+    // ✅ ONLY ADDITION: Create notification for student
+    const studentSql = `
+      SELECT 
+        s.user_id as student_id,
+        u.full_name as student_name,
+        DATE_FORMAT(dl.log_date, '%Y-%m-%d') as formatted_date
+      FROM daily_logs dl
+      JOIN students s ON dl.student_id = s.user_id
+      JOIN users u ON s.user_id = u.id
+      WHERE dl.id = ?
+    `;
+    const studentRows = await Dailylog.query(studentSql, [id]);
+    const student = studentRows[0];
+
+    if (student) {
+      const dateObj = new Date(student.formatted_date + 'T00:00:00');
+      const formattedDate = dateObj.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      await createNotification(
+        student.student_id,
+        `Your log entry for ${formattedDate} was rejected. Please review the feedback and resubmit.`,
+        'rejection'
+      );
+      console.log('✅ Notification sent to student');
+    }
+    // ✅ END OF ADDITION
     
     res.json({
       status: "success",

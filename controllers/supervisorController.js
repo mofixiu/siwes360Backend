@@ -135,13 +135,14 @@ const getSupervisorStudents = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get all students assigned to this supervisor
+    // Get all students assigned to this supervisor with school information
     const sql = `
       SELECT 
         s.user_id,
         s.matric_no,
         s.department,
         s.level,
+        s.school_id,
         s.internship_start_date,
         s.internship_end_date,
         s.workplace_name,
@@ -149,11 +150,14 @@ const getSupervisorStudents = async (req, res) => {
         u.full_name,
         u.email,
         u.phone,
+        sc.name as school_name,
+        sc.address as school_address,
         (SELECT COUNT(*) FROM daily_logs WHERE student_id = s.user_id AND status = 'pending') as pending_logs,
         (SELECT COUNT(*) FROM daily_logs WHERE student_id = s.user_id AND status = 'approved') as approved_logs,
         (SELECT COUNT(*) FROM daily_logs WHERE student_id = s.user_id) as total_logs
       FROM students s
       JOIN users u ON s.user_id = u.id
+      LEFT JOIN schools sc ON s.school_id = sc.id
       WHERE s.supervisor_id = ?
       ORDER BY u.full_name ASC
     `;

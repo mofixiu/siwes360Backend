@@ -26,43 +26,45 @@ const getStudents = async (req, res) => {
 const getStudentById = async (req, res) => {
     let { id } = req.params;
     
-    // Use custom query for students table since it uses user_id instead of id
-    const sql = 'SELECT * FROM students WHERE user_id = ?';
-    const studentRows = await Student.query(sql, [id]);
-    const student = studentRows[0];
-    
-    if (!student) {
-        return res.status(404).json({
+    try {
+        // Get student data with school information
+        const sql = `
+            SELECT 
+                s.*,
+                u.full_name,
+                u.email,
+                u.phone,
+                sc.name as school_name,
+                sc.address as school_address
+            FROM students s
+            JOIN users u ON s.user_id = u.id
+            LEFT JOIN schools sc ON s.school_id = sc.id
+            WHERE s.user_id = ?
+        `;
+        
+        const studentRows = await Student.query(sql, [id]);
+        
+        if (!studentRows || studentRows.length === 0) {
+            return res.status(404).json({
+                status: "error",
+                message: "Student not found",
+            });
+        }
+        
+        const student = studentRows[0];
+        
+        res.json({
+            status: "success",
+            message: "Student fetched successfully",
+            data: student,
+        });
+    } catch (error) {
+        console.error('Get student error:', error);
+        res.status(500).json({
             status: "error",
-            message: "Student not found",
+            message: "Failed to fetch student: " + error.message,
         });
     }
-    
-    // Get user information
-    const userSql = `
-      SELECT 
-        u.full_name,
-        u.email,
-        u.phone,
-        s.name as school_name
-      FROM users u
-      LEFT JOIN schools s ON u.id = ?
-      WHERE u.id = ?
-    `;
-    const userRows = await Student.query(userSql, [student.school_id, id]);
-    const userInfo = userRows[0];
-    
-    // Combine student and user data
-    const fullProfile = {
-      ...student,
-      ...userInfo
-    };
-    
-    res.json({
-        status: "success",
-        message: "Student fetched successfully",
-        data: fullProfile,
-    });
 };
 
 const partialStudentUpdate = async (req, res) => {

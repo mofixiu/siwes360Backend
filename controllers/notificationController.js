@@ -38,28 +38,33 @@ const getNotifications = async (req, res) => {
 };
 
 const getNotificationsByUser = async (req, res) => {
-    try {
-        const { user_id } = req.params;
+  try {
+    const { userId } = req.params;
 
-        const sql = `
-            SELECT * FROM notifications 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC
-        `;
-        const notifications = await Notification.query(sql, [user_id]);
+    const sql = `
+      SELECT 
+        n.*,
+        DATE_FORMAT(n.created_at, '%Y-%m-%d %H:%i:%s') as created_at
+      FROM notifications n
+      WHERE n.user_id = ?
+      ORDER BY n.created_at DESC
+      LIMIT 50
+    `;
 
-        res.json({
-            status: "success",
-            message: "Notifications fetched successfully",
-            data: notifications,
-        });
-    } catch (error) {
-        console.error('Get notifications error:', error);
-        res.status(500).json({
-            status: "error",
-            message: "Failed to fetch notifications: " + error.message,
-        });
-    }
+    const notifications = await Notification.query(sql, [userId]);
+
+    res.json({
+      status: "success",
+      message: "Notifications fetched successfully",
+      data: notifications,
+    });
+  } catch (error) {
+    console.error("Get notifications error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to fetch notifications: " + error.message,
+    });
+  }
 };
 
 const getNotificationById = async (req, res) => {
@@ -79,83 +84,89 @@ const getNotificationById = async (req, res) => {
 };
 
 const markNotificationAsRead = async (req, res) => {
-    try {
-        const { id } = req.params;
-        
-        const sql = `UPDATE notifications SET is_read = 1 WHERE id = ?`;
-        await Notification.query(sql, [id]);
-        
-        res.json({
-            status: "success",
-            message: "Notification marked as read",
-        });
-    } catch (error) {
-        console.error('Mark notification as read error:', error);
-        res.status(500).json({
-            status: "error",
-            message: "Failed to mark notification as read: " + error.message,
-        });
-    }
+  try {
+    const { id } = req.params;
+
+    const sql = `UPDATE notifications SET is_read = 1 WHERE id = ?`;
+    await Notification.query(sql, [id]);
+
+    res.json({
+      status: "success",
+      message: "Notification marked as read",
+    });
+  } catch (error) {
+    console.error("Mark notification as read error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to mark notification as read: " + error.message,
+    });
+  }
 };
 
-const markAllNotificationsAsRead = async (req, res) => {
-    try {
-        const { userId } = req.params;
-        
-        const sql = `UPDATE notifications SET is_read = 1 WHERE user_id = ?`;
-        await Notification.query(sql, [userId]);
-        
-        res.json({
-            status: "success",
-            message: "All notifications marked as read",
-        });
-    } catch (error) {
-        console.error('Mark all notifications as read error:', error);
-        res.status(500).json({
-            status: "error",
-            message: "Failed to mark all notifications as read: " + error.message,
-        });
-    }
+const markAllAsRead = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const sql = `UPDATE notifications SET is_read = 1 WHERE user_id = ?`;
+    await Notification.query(sql, [userId]);
+
+    res.json({
+      status: "success",
+      message: "All notifications marked as read",
+    });
+  } catch (error) {
+    console.error("Mark all as read error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to mark all notifications as read: " + error.message,
+    });
+  }
 };
 
 const deleteNotification = async (req, res) => {
-    try {
-        const { id } = req.params;
-        await Notification.delete(id);
-        
-        res.json({
-            status: "success",
-            message: "Notification deleted successfully",
-        });
-    } catch (error) {
-        console.error('Delete notification error:', error);
-        res.status(500).json({
-            status: "error",
-            message: "Failed to delete notification: " + error.message,
-        });
+  try {
+    const { id } = req.params;
+
+    const deleted = await Notification.delete(id);
+    if (!deleted) {
+      return res.status(404).json({
+        status: "error",
+        message: "Notification not found",
+      });
     }
+
+    res.json({
+      status: "success",
+      message: "Notification deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete notification error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to delete notification: " + error.message,
+    });
+  }
 };
 
-const partialNotificationUpdate = async (req, res) => {
-    let { id } = req.params;
-    let updateData = req.body;
+// Helper function to create notifications
+const createNotification = async (userId, message, type = 'general') => {
+  try {
+    console.log(`Creating notification for user ${userId}: ${message} (${type})`);
     
-    const notification = await Notification.find(id);
-    if (!notification) {
-        return res.status(404).json({
-            status: "error",
-            message: "Notification not found",
-        });
-    }
-    
-    Object.assign(notification, updateData);
-    await notification.update();
-    
-    res.json({
-        status: "success",
-        message: "Notification updated successfully",
-        data: notification,
+    const notification = Notification.fill({
+      user_id: userId,
+      message: message,
+      type: type,
+      is_read: false,
     });
+    
+    await notification.insert();
+    console.log(`✅ Notification created successfully with ID: ${notification.id}`);
+    return notification;
+  } catch (error) {
+    console.error('❌ Error creating notification:', error);
+    return null;
+  }
 };
 
 module.exports = {
@@ -164,7 +175,7 @@ module.exports = {
     getNotificationsByUser,
     getNotificationById,
     markNotificationAsRead,
-    markAllNotificationsAsRead,
+    markAllAsRead,
     deleteNotification,
-    partialNotificationUpdate,
+    createNotification,
 };

@@ -1,23 +1,25 @@
-const { Router } = require("express");
-const router = Router();
-
+const express = require("express");
+const router = express.Router();
 const {
-    storeNotification,
-    getNotifications,
-    getNotificationById,
-    markNotificationAsRead,
-    markAllNotificationsAsRead,
-    deleteNotification,
-    partialNotificationUpdate,
+  getNotificationsByUser,
+  markNotificationAsRead,
+  markAllAsRead,
+  deleteNotification,
+  createNotification, // Add this
 } = require("../controllers/notificationController");
 
-// Notifications
-router.post("/", storeNotification);
-router.get("/user/:userId", getNotifications);
-router.get("/:id", getNotificationById);
+// Get all notifications for a user
+router.get("/user/:userId", getNotificationsByUser);
+
+// Mark single notification as read
 router.put("/:id/read", markNotificationAsRead);
-router.put("/user/:userId/read-all", markAllNotificationsAsRead);
+
+// Mark all notifications as read for a user
+router.put("/user/:userId/read-all", markAllAsRead);
+
+// Delete a notification
 router.delete("/:id", deleteNotification);
-router.patch("/:id", partialNotificationUpdate);
+
+
 
 module.exports = router;
