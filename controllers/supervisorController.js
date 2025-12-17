@@ -23,13 +23,29 @@ const getSupervisors = async (req, res) => {
 
 const getSupervisorById = async (req, res) => {
     let { id } = req.params;
-    const supervisor = await Supervisor.find(id);
+    
+    // For supervisors table, we need to join with users table and use user_id
+    const sql = `
+      SELECT 
+        s.*,
+        u.full_name,
+        u.email,
+        u.phone
+      FROM supervisors s
+      JOIN users u ON s.user_id = u.id
+      WHERE s.user_id = ?
+    `;
+    
+    const supervisorRows = await Supervisor.query(sql, [id]);
+    const supervisor = supervisorRows[0];
+    
     if (!supervisor) {
         return res.status(404).json({
             status: "error",
             message: "Supervisor not found",
         });
     }
+    
     res.json({
         status: "success",
         message: "Supervisor fetched successfully",
@@ -38,23 +54,65 @@ const getSupervisorById = async (req, res) => {
 };
 
 const partialSupervisorUpdate = async (req, res) => {
-    let { id } = req.params;
-    const supervisor = await Supervisor.find(id);
-    if (!supervisor) {
-        return res.status(404).json({
+    try {
+        const { id } = req.params;
+        
+        // Use direct SQL update instead of model methods
+        const updateFields = [];
+        const updateValues = [];
+        
+        // Build dynamic update query based on provided fields
+        if (req.body.organization !== undefined) {
+            updateFields.push('organization = ?');
+            updateValues.push(req.body.organization);
+        }
+        if (req.body.position !== undefined) {
+            updateFields.push('position = ?');
+            updateValues.push(req.body.position);
+        }
+        
+        if (updateFields.length === 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "No fields to update",
+            });
+        }
+        
+        // Add updated_at timestamp
+        updateFields.push('updated_at = NOW()');
+        
+        // Add user_id to values array for WHERE clause
+        updateValues.push(id);
+        
+        const sql = `UPDATE supervisors SET ${updateFields.join(', ')} WHERE user_id = ?`;
+        await Supervisor.query(sql, updateValues);
+        
+        // Fetch updated supervisor with user info
+        const fetchSql = `
+            SELECT 
+                s.*,
+                u.full_name,
+                u.email,
+                u.phone
+            FROM supervisors s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.user_id = ?
+        `;
+        const supervisorRows = await Supervisor.query(fetchSql, [id]);
+        const supervisor = supervisorRows[0];
+
+        res.json({
+            status: "success",
+            message: "Supervisor updated successfully",
+            data: supervisor,
+        });
+    } catch (error) {
+        console.error('Update supervisor error:', error);
+        res.status(500).json({
             status: "error",
-            message: "Supervisor not found",
+            message: "Failed to update supervisor: " + error.message,
         });
     }
-    supervisor.fill(req.body);
-
-    await supervisor.update();
-
-    res.json({
-        status: "success",
-        message: "Supervisor updated successfully",
-        data: supervisor,
-    });
 };
 
 const deleteSupervisor = async (req, res) => {
@@ -170,16 +228,16 @@ const getSupervisorDashboard = async (req, res) => {
     const completedRows = await Student.query(completedReviewsSql, [id]);
     const completedCount = completedRows[0].completed_count;
 
-    // Get recent pending approvals with student details
+    // Get recent pending approvals
     const recentApprovalsSql = `
       SELECT 
         dl.id,
-        dl.log_date,
+        dl.student_id,
+        DATE_FORMAT(dl.log_date, '%Y-%m-%d') as log_date,
         dl.description,
         dl.status,
-        s.user_id as student_id,
-        s.matric_no,
-        u.full_name as student_name
+        u.full_name as student_name,
+        s.matric_no
       FROM daily_logs dl
       JOIN students s ON dl.student_id = s.user_id
       JOIN users u ON s.user_id = u.id

@@ -129,36 +129,29 @@ const getUserById = async (req, res) => {
 };
 
 const updateUser = async (req, res) => {
-  let { id } = req.params;
-  let {
-      email,
-    password,
-    full_name,
-    role,
-    phone,
-  } = req.body;
-  const user = await User.find(id);
-  if (!user) {
-    return res.status(404).json({
+  try {
+    const { id } = req.params;
+    const { full_name, email, phone } = req.body;
+
+    const sql = `
+      UPDATE users 
+      SET full_name = ?, email = ?, phone = ?, updated_at = NOW()
+      WHERE id = ?
+    `;
+
+    await User.query(sql, [full_name, email, phone, id]);
+
+    res.json({
+      status: "success",
+      message: "User updated successfully",
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({
       status: "error",
-      message: "User not found",
+      message: "Failed to update user: " + error.message,
     });
   }
-  user.fill({
-    email,
-    password,
-    full_name,
-    role,
-    phone,
-  });
-
-  await user.update();
-
-  res.json({
-    status: "success",
-    message: "User updated successfully",
-    data: user,
-  });
 };
 
 const partialUserUpdate = async (req, res) => {

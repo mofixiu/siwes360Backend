@@ -1,7 +1,7 @@
-const Model = require('./Model');
+const Model = require("./Model");
 
 class Notification extends Model {
-
+  static table = "notifications";
 }
 
 module.exports = Notification;

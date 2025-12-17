@@ -1,12 +1,20 @@
 const { Router } = require("express");
 const router = Router();
 
-const { getUsers, getUserById, deleteUser,partialUserUpdate } = require("../controllers/userController");
+const { 
+  storeUser, 
+  getUsers, 
+  getUserById, 
+  partialUserUpdate, 
+  deleteUser,
+  updateUser // Add this import
+} = require("../controllers/userController");
 
-// Example user management routes
+router.post("/", storeUser);
 router.get("/", getUsers);
 router.get("/:id", getUserById);
-router.delete("/:id", deleteUser);
 router.patch("/:id", partialUserUpdate);
+router.put("/:id", updateUser); // Add this route
+router.delete("/:id", deleteUser);
 
 module.exports = router;

@@ -125,7 +125,7 @@ const register = async (req, res) => {
       });
     }
 
-    // Validate supervisor-specific fields
+    // Validate role-specific fields for supervisor
     if (!roleSpecificData.organization || !roleSpecificData.position) {
       return res.status(400).json({
         status: "error",
@@ -147,7 +147,7 @@ const register = async (req, res) => {
       email,
       password: await hash(password, 10),
       full_name,
-      role: 'supervisor',
+      role,
       phone,
     });
     

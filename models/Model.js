@@ -23,10 +23,37 @@ class Model {
   }
 
   static async find(id) {
-    console.log(`Finding in table: ${this.table}`); // ADD THIS DEBUG LINE
-    const sql = `SELECT * FROM ${this.table} WHERE id = ? OR user_id = ?`;
-    const rows = await this.query(sql, [id, id]);
-    return rows[0];
+    // use this for real work the one below is just for this project
+    //  console.log(`Finding in table: ${this.table}`); // ADD THIS DEBUG LINE
+    // const sql = `SELECT * FROM ${this.table} WHERE id = ? OR user_id = ?`;
+    // const rows = await this.query(sql, [id, id]);
+    // return rows[0];
+    const tableName = this.table;
+    console.log(`Finding in table: ${tableName}`);
+    
+    // Tables that use 'id' as primary key only (no user_id)
+    const idOnlyTables = ['daily_logs', 'log_attachments', 'notifications', 'schools'];
+    
+    // Tables that use 'user_id' as primary key only (no id column)
+    const userIdOnlyTables = ['supervisors', 'students', 'coordinators', 'admins', 'itf'];
+    
+    let sql;
+    if (idOnlyTables.includes(tableName)) {
+      // For tables with only 'id' primary key
+      sql = `SELECT * FROM ${tableName} WHERE id = ?`;
+      const [rows] = await connection.execute(sql, [id]);
+      return rows.length > 0 ? this.fill(rows[0]) : null;
+    } else if (userIdOnlyTables.includes(tableName)) {
+      // For tables with only 'user_id' primary key
+      sql = `SELECT * FROM ${tableName} WHERE user_id = ?`;
+      const [rows] = await connection.execute(sql, [id]);
+      return rows.length > 0 ? this.fill(rows[0]) : null;
+    } else {
+      // For tables with both 'id' and 'user_id' (fallback, shouldn't reach here)
+      sql = `SELECT * FROM ${tableName} WHERE id = ? OR user_id = ?`;
+      const [rows] = await connection.execute(sql, [id, id]);
+      return rows.length > 0 ? this.fill(rows[0]) : null;
+    }
   }
 
   static fill(data) {
@@ -81,16 +108,31 @@ class Model {
   }
 
   static async delete(id) {
-    const tableName = this.table; // USE THIS
-    console.log(`Deleting from table: ${tableName}`); // ADD THIS DEBUG LINE
-    const sql = `DELETE FROM ${tableName} WHERE id = ? OR user_id = ?`;
+    const tableName = this.table;
+    console.log(`Deleting from table: ${tableName}`);
     
-    try {
+    // Tables that use 'id' as primary key only (no user_id)
+    const idOnlyTables = ['daily_logs', 'log_attachments', 'notifications', 'schools'];
+    
+    // Tables that use 'user_id' as primary key only (no id column)
+    const userIdOnlyTables = ['supervisors', 'students', 'coordinators', 'admins', 'itf'];
+    
+    let sql;
+    if (idOnlyTables.includes(tableName)) {
+      // For tables with only 'id' primary key
+      sql = `DELETE FROM ${tableName} WHERE id = ?`;
+      const [result] = await connection.execute(sql, [id]);
+      return result.affectedRows > 0;
+    } else if (userIdOnlyTables.includes(tableName)) {
+      // For tables with only 'user_id' primary key
+      sql = `DELETE FROM ${tableName} WHERE user_id = ?`;
+      const [result] = await connection.execute(sql, [id]);
+      return result.affectedRows > 0;
+    } else {
+      // For tables with both 'id' and 'user_id' (fallback)
+      sql = `DELETE FROM ${tableName} WHERE id = ? OR user_id = ?`;
       const [result] = await connection.execute(sql, [id, id]);
       return result.affectedRows > 0;
-    } catch (error) {
-      console.error('Delete error:', error);
-      throw error;
     }
   }
 }

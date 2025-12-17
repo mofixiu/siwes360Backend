@@ -40,15 +40,16 @@ const upload = multer({
   }
 });
 
+// Fix the import - use correct function names with capital L
 const { 
-  storeDailylog, 
+  storeDailyLog,        // Changed from storeDailylog
   getDailylogs, 
   getDailylogById, 
   getDailylogsByStudent,
   updateDailylog,
   partialDailylogUpdate,
-  approveDailylog,
-  rejectDailylog,
+  approveDailyLog,      // Changed from approveDailylog
+  rejectDailyLog,       // Changed from rejectDailylog
   deleteDailylog 
 } = require("../controllers/dailylogController.js");
 const verifyToken = require("../middlewares/verifyToken");
@@ -84,7 +85,7 @@ router.post(
   },
   upload.array('attachments', 5),
   handleMulterError,
-  storeDailylog
+  storeDailyLog  // Changed from storeDailylog
 );
 
 router.get("/", getDailylogs);
@@ -93,9 +94,9 @@ router.get("/student/:student_id", getDailylogsByStudent);
 router.put("/:id", verifyToken, updateDailylog);
 router.patch("/:id", verifyToken, partialDailylogUpdate);
 
-// Supervisor actions
-router.put("/:id/approve", verifyToken, approveDailylog);
-router.put("/:id/reject", verifyToken, rejectDailylog);
+// Supervisor actions - use correct function names
+router.put("/:id/approve", verifyToken, approveDailyLog);  // Changed from approveDailylog
+router.put("/:id/reject", verifyToken, rejectDailyLog);    // Changed from rejectDailylog
 
 // Delete
 router.delete("/:id", verifyToken, deleteDailylog);

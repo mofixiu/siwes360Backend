@@ -25,17 +25,43 @@ const getStudents = async (req, res) => {
 
 const getStudentById = async (req, res) => {
     let { id } = req.params;
-    const student = await Student.find(id);
+    
+    // Use custom query for students table since it uses user_id instead of id
+    const sql = 'SELECT * FROM students WHERE user_id = ?';
+    const studentRows = await Student.query(sql, [id]);
+    const student = studentRows[0];
+    
     if (!student) {
         return res.status(404).json({
             status: "error",
             message: "Student not found",
         });
     }
+    
+    // Get user information
+    const userSql = `
+      SELECT 
+        u.full_name,
+        u.email,
+        u.phone,
+        s.name as school_name
+      FROM users u
+      LEFT JOIN schools s ON u.id = ?
+      WHERE u.id = ?
+    `;
+    const userRows = await Student.query(userSql, [student.school_id, id]);
+    const userInfo = userRows[0];
+    
+    // Combine student and user data
+    const fullProfile = {
+      ...student,
+      ...userInfo
+    };
+    
     res.json({
         status: "success",
         message: "Student fetched successfully",
-        data: student,
+        data: fullProfile,
     });
 };
 
@@ -85,58 +111,94 @@ const updateInternshipDates = async (req, res) => {
       workplace_name,
       workplace_address,
       workplace_location,
-      supervisor_id, // ADD THIS
+      supervisor_id,
       supervisor_name,
       supervisor_phone,
-      supervisor_email
+      supervisor_email,
     } = req.body;
 
-    if (!internship_start_date || !internship_end_date) {
-      return res.status(400).json({
-        status: "error",
-        message: "Start date and end date are required",
-      });
+    // Build update fields dynamically
+    const updateFields = [];
+    const updateValues = [];
+
+    if (internship_start_date) {
+      updateFields.push('internship_start_date = ?');
+      updateValues.push(internship_start_date);
     }
 
-    // Update student record with all workplace info INCLUDING supervisor_id
+    if (internship_end_date) {
+      updateFields.push('internship_end_date = ?');
+      updateValues.push(internship_end_date);
+    }
+
+    if (workplace_name !== undefined) {
+      updateFields.push('workplace_name = ?');
+      updateValues.push(workplace_name);
+    }
+
+    if (workplace_address !== undefined) {
+      updateFields.push('workplace_address = ?');
+      updateValues.push(workplace_address);
+    }
+
+    if (workplace_location !== undefined) {
+      updateFields.push('workplace_location = ?');
+      updateValues.push(workplace_location);
+    }
+
+    if (supervisor_id !== undefined) {
+      updateFields.push('supervisor_id = ?');
+      updateValues.push(supervisor_id);
+    }
+
+    if (supervisor_name !== undefined) {
+      updateFields.push('supervisor_name = ?');
+      updateValues.push(supervisor_name);
+    }
+
+    if (supervisor_phone !== undefined) {
+      updateFields.push('supervisor_phone = ?');
+      updateValues.push(supervisor_phone);
+    }
+
+    if (supervisor_email !== undefined) {
+      updateFields.push('supervisor_email = ?');
+      updateValues.push(supervisor_email);
+    }
+
+    // Always set is_first_login to 0 when updating internship dates
+    updateFields.push('is_first_login = ?');
+    updateValues.push(0); // Set to 0 (false)
+
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(id);
+
     const sql = `
       UPDATE students 
-      SET internship_start_date = ?, 
-          internship_end_date = ?, 
-          is_first_login = ?,
-          supervisor_id = ?,
-          workplace_name = ?,
-          workplace_address = ?,
-          workplace_location = ?,
-          supervisor_name = ?,
-          supervisor_phone = ?,
-          supervisor_email = ?
+      SET ${updateFields.join(', ')} 
       WHERE user_id = ?
     `;
-    
-    await Student.query(sql, [
-      internship_start_date,
-      internship_end_date,
-      is_first_login === false ? 0 : 1,
-      supervisor_id || null, // ADD THIS - will be NULL if not selected from database
-      workplace_name || null,
-      workplace_address || null,
-      workplace_location || null,
-      supervisor_name || null,
-      supervisor_phone || null,
-      supervisor_email || null,
-      id
-    ]);
+
+    await Student.query(sql, updateValues);
 
     // Fetch updated student data
-    const studentSql = "SELECT * FROM students WHERE user_id = ?";
+    const studentSql = `
+      SELECT 
+        s.*,
+        u.full_name,
+        u.email,
+        u.phone
+      FROM students s
+      JOIN users u ON s.user_id = u.id
+      WHERE s.user_id = ?
+    `;
     const studentRows = await Student.query(studentSql, [id]);
-    const student = studentRows[0];
+    const updatedStudent = studentRows[0];
 
     res.json({
       status: "success",
       message: "Internship details updated successfully",
-      data: student,
+      data: updatedStudent,
     });
   } catch (error) {
     console.error('Update internship dates error:', error);
@@ -286,13 +348,21 @@ const getStudentDashboard = async (req, res) => {
 
     // Get recent log entries
     const logsSql = `
-      SELECT *
+      SELECT 
+        *,
+        DATE_FORMAT(log_date, '%Y-%m-%d') as log_date_formatted
       FROM daily_logs
       WHERE student_id = ?
       ORDER BY log_date DESC
       LIMIT 5
     `;
     const recentLogs = await Dailylog.query(logsSql, [id]);
+    
+    // Replace log_date with formatted version to avoid timezone conversion
+    for (let log of recentLogs) {
+      log.log_date = log.log_date_formatted;
+      delete log.log_date_formatted;
+    }
 
     // Get log statistics
     const statsSql = `
