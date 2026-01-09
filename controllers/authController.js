@@ -241,8 +241,198 @@ const getProfile = async (req, res) => {
   }
 };
 
+const forgotPassword = async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    console.log('Forgot password request for:', email);
+
+    // Find user by email
+    const sql = "SELECT * FROM users WHERE email = ?";
+    const users = await User.query(sql, [email]);
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "No account found with this email address",
+      });
+    }
+
+    const user = users[0];
+
+    // Generate 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store OTP in database
+    const updateSql = `
+      UPDATE users 
+      SET reset_otp = ?, reset_otp_expiry = ? 
+      WHERE id = ?
+    `;
+    await User.query(updateSql, [otp, otpExpiry, user.id]);
+
+    console.log(`OTP generated for ${email}: ${otp}`);
+    console.log(`OTP expires at: ${otpExpiry}`);
+
+    // TODO: Send OTP via email (for now, just return it in response for testing)
+    // In production, use a service like SendGrid, AWS SES, or Nodemailer
+
+    res.json({
+      status: "success",
+      message: "Password reset OTP has been sent to your email",
+      // Remove this in production:
+      otp: otp, // Only for development/testing
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to process password reset request: " + error.message,
+    });
+  }
+};
+
+const verifyResetOTP = async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    console.log('Verifying OTP for:', email);
+
+    // Find user by email
+    const sql = "SELECT * FROM users WHERE email = ?";
+    const users = await User.query(sql, [email]);
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    const user = users[0];
+
+    // Check if OTP matches and is not expired
+    if (user.reset_otp !== otp) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid OTP",
+      });
+    }
+
+    const now = new Date();
+    const expiry = new Date(user.reset_otp_expiry);
+
+    if (now > expiry) {
+      return res.status(400).json({
+        status: "error",
+        message: "OTP has expired. Please request a new one.",
+      });
+    }
+
+    // Generate a reset token for password change
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Store reset token
+    const updateSql = `
+      UPDATE users 
+      SET reset_token = ?, reset_token_expiry = ?
+      WHERE id = ?
+    `;
+    await User.query(updateSql, [resetToken, resetTokenExpiry, user.id]);
+
+    console.log('OTP verified successfully for:', email);
+
+    res.json({
+      status: "success",
+      message: "OTP verified successfully",
+      data: {
+        reset_token: resetToken,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("Verify OTP error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to verify OTP: " + error.message,
+    });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  const { reset_token, new_password } = req.body;
+
+  try {
+    console.log('Reset password request with token');
+
+    if (!new_password || new_password.length < 8) {
+      return res.status(400).json({
+        status: "error",
+        message: "Password must be at least 8 characters long",
+      });
+    }
+
+    // Find user by reset token
+    const sql = "SELECT * FROM users WHERE reset_token = ?";
+    const users = await User.query(sql, [reset_token]);
+
+    if (!users || users.length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or expired reset token",
+      });
+    }
+
+    const user = users[0];
+
+    // Check if token is expired
+    const now = new Date();
+    const expiry = new Date(user.reset_token_expiry);
+
+    if (now > expiry) {
+      return res.status(400).json({
+        status: "error",
+        message: "Reset token has expired. Please request a new password reset.",
+      });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+
+    // Update password and clear reset fields
+    const updateSql = `
+      UPDATE users 
+      SET password = ?, 
+          reset_otp = NULL, 
+          reset_otp_expiry = NULL,
+          reset_token = NULL,
+          reset_token_expiry = NULL
+      WHERE id = ?
+    `;
+    await User.query(updateSql, [hashedPassword, user.id]);
+
+    console.log('Password reset successfully for user:', user.email);
+
+    res.json({
+      status: "success",
+      message: "Password has been reset successfully. You can now login with your new password.",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to reset password: " + error.message,
+    });
+  }
+};
+
 module.exports = {
   login,
   register,
   getProfile,
+  forgotPassword,
+  verifyResetOTP,
+  resetPassword,
 };
