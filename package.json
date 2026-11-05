@@ -4,7 +4,8 @@
   "description": "\"Backend for A SIWES Logbook app\"",
   "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "author": "Mofiyinfoluwa Ebo",
   "license": "ISC",

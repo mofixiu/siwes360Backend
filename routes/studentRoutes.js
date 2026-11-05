@@ -1,28 +1,29 @@
 const { Router } = require("express");
 const router = Router();
 
-const { 
-  storeStudent, 
-  getStudents, 
-  getStudentById, 
-  partialStudentUpdate, 
-  deleteStudent, 
+const {
+  storeStudent,
+  getStudents,
+  getStudentById,
+  partialStudentUpdate,
+  deleteStudent,
   updateInternshipDates,
   searchSupervisors,
-  getStudentDashboard 
+  getStudentDashboard,
 } = require("../controllers/studentController");
-const verifyToken = require("../middlewares/verifyToken");
+const allowRoles = require("../middlewares/allowRoles");
+const { selfOrRoles, studentViewer } = require("../middlewares/access");
 
-// Student CRUD routes
-router.post("/", storeStudent);
-router.get("/", getStudents);
-router.get("/:id", getStudentById);
-router.patch("/:id", partialStudentUpdate);
-router.delete("/:id", deleteStudent);
+// Mounted behind verifyToken in app.js.
+router.get("/search/supervisors", allowRoles("student", "admin"), searchSupervisors);
 
-// Protected routes
-router.patch("/:id/internship-dates", verifyToken, updateInternshipDates);
-router.get("/:id/dashboard", verifyToken, getStudentDashboard);
-router.get("/search/supervisors", verifyToken, searchSupervisors);
+router.post("/", allowRoles("admin"), storeStudent);
+router.get("/", allowRoles("admin", "itf"), getStudents);
+router.get("/:id", studentViewer("id"), getStudentById);
+router.patch("/:id", allowRoles("admin"), partialStudentUpdate);
+router.delete("/:id", allowRoles("admin"), deleteStudent);
+
+router.patch("/:id/internship-dates", selfOrRoles("id", "admin"), updateInternshipDates);
+router.get("/:id/dashboard", studentViewer("id"), getStudentDashboard);
 
 module.exports = router;

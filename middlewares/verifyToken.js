@@ -1,23 +1,32 @@
 // middlewares/verifyToken.js
 const jwt = require("jsonwebtoken");
-const JWT_SECRET = process.env.JWT_SECRET || "what is your name";
+const { JWT_SECRET, JWT_ALGORITHM } = require("../config/auth");
+const User = require("../models/User");
 
-const verifyToken = (req, res, next) => {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1]; // Bearer <token>
+// Checks the bearer token, then reloads the user so a deleted account or a
+// changed role takes effect at once instead of when the token expires.
+// req.user is { id, email, role } taken from the database, not from the token.
+const verifyToken = async (req, res, next) => {
+  const [scheme, token] = (req.headers["authorization"] || "").split(" ");
 
-    if (!token) {
-        return res.status(401).json({ status: "error", message: "No token provided" });
-    }
+  if (scheme !== "Bearer" || !token) {
+    return res.status(401).json({ status: "error", message: "No token provided" });
+  }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) {
-            return res.status(403).json({ status: "error", message: "Invalid or expired token" });
-        }
+  let decoded;
+  try {
+    decoded = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
+  } catch (err) {
+    return res.status(401).json({ status: "error", message: "Invalid or expired token" });
+  }
 
-        req.user = decoded; // attach decoded payload (id, role, email etc.)
-        next();
-    });
+  const rows = await User.query("SELECT id, email, role FROM users WHERE id = ?", [decoded.id]);
+  if (rows.length === 0) {
+    return res.status(401).json({ status: "error", message: "Account no longer exists" });
+  }
+
+  req.user = { id: rows[0].id, email: rows[0].email, role: rows[0].role };
+  next();
 };
 
 module.exports = verifyToken;

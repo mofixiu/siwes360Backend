@@ -1,110 +1,91 @@
 const User = require("../models/User");
-require("dotenv").config();
-const { hash, compare } = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const JWT_SECRET = process.env.JWT_SECRET || "what is your name";
+const { hash } = require("bcrypt");
+const { PUBLIC_USER_SELECT, publicUser, pick } = require("../utils/sanitize");
+const { BCRYPT_ROUNDS, PASSWORD_MIN_LENGTH } = require("../config/auth");
+
+const ROLES = ["student", "supervisor", "admin", "itf"];
+
+// Fields a user (or an admin on their behalf) may change through /api/users.
+// Role and password are deliberately absent: passwords go through
+// /api/auth/change-password, and roles are not changeable through the API.
+const UPDATABLE_USER_FIELDS = ["full_name", "email", "phone"];
+
+// Admin only (see routes/userRoutes.js).
 const storeUser = async (req, res) => {
   try {
-    let { email, password, full_name, role, phone, ...roleSpecificData } = req.body;
-    
-    // Validate required fields
+    const { email, password, full_name, role, phone } = req.body;
+
     if (!email || !password || !full_name || !role) {
       return res.status(400).json({
         status: "error",
         message: "Email, password, full_name, and role are required",
       });
     }
+    if (!ROLES.includes(role)) {
+      return res.status(400).json({ status: "error", message: "Unknown role" });
+    }
+    if (String(password).length < PASSWORD_MIN_LENGTH) {
+      return res.status(400).json({
+        status: "error",
+        message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters long`,
+      });
+    }
 
-    // Create the user first
     const user = User.fill({
       email,
-      password,
+      password: await hash(String(password), BCRYPT_ROUNDS),
       full_name,
       role,
       phone,
     });
-    
-    user.password = await hash(user.password, 10);
     await user.insert();
-    
-    // Now create role-specific record based on the role
+
     switch (role) {
-      case 'student':
-        const Student = require('../models/Student');
-        const student = Student.fill({
-          user_id: user.id,
-          matric_no: roleSpecificData.matric_no,
-          department: roleSpecificData.department,
-          level: roleSpecificData.level,
-          supervisor_id: roleSpecificData.supervisor_id,
-          school_id: roleSpecificData.school_id,
-        });
-        await student.insert();
+      case "student": {
+        const Student = require("../models/Student");
+        const fields = pick(req.body, ["matric_no", "department", "level", "supervisor_id", "school_id"]);
+        await Student.fill({ user_id: user.id, ...fields }).insert();
         break;
-        
-      case 'supervisor':
-        const Supervisor = require('../models/Supervisor');
-        const supervisor = Supervisor.fill({
-          user_id: user.id,
-          organization: roleSpecificData.organization,
-          position: roleSpecificData.position,
-        });
-        await supervisor.insert();
+      }
+      case "supervisor": {
+        const Supervisor = require("../models/Supervisor");
+        const fields = pick(req.body, ["organization", "position"]);
+        await Supervisor.fill({ user_id: user.id, ...fields }).insert();
         break;
-        
-      case 'itf':
-        const Itf = require('../models/Itf');
-        const itf = Itf.fill({
-          user_id: user.id,
-          region: roleSpecificData.region,
-        });
-        await itf.insert();
+      }
+      case "itf": {
+        const Itf = require("../models/Itf");
+        const fields = pick(req.body, ["region"]);
+        await Itf.fill({ user_id: user.id, ...fields }).insert();
         break;
-        
-      case 'admin':
-        const Admin = require('../models/Admin');
-        const admin = Admin.fill({
-          user_id: user.id,
-          school_id: roleSpecificData.school_id,
-        });
-        await admin.insert();
+      }
+      case "admin": {
+        const Admin = require("../models/Admin");
+        const fields = pick(req.body, ["school_id"]);
+        await Admin.fill({ user_id: user.id, ...fields }).insert();
         break;
+      }
     }
-    
-    // Return user data without password
-    const userData = {
-      id: user.id,
-      email: user.email,
-      full_name: user.full_name,
-      role: user.role,
-      phone: user.phone,
-    };
-    
+
     res.json({
       status: "success",
       message: "User and profile created successfully",
-      data: userData,
+      data: publicUser(user),
     });
-    
   } catch (error) {
-    console.error('Registration error:', error);
-    
-    if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({
-        status: "error",
-        message: "Email already exists",
-      });
+    console.error("Create user error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ status: "error", message: "Email already exists" });
     }
-    
-    res.status(500).json({
-      status: "error",
-      message: "Failed to create user: " + error.message,
-    });
+
+    res.status(500).json({ status: "error", message: "Failed to create user" });
   }
 };
 
+// Admin only.
 const getUsers = async (req, res) => {
-  const users = await User.fetch();
+  const users = await User.query(`SELECT ${PUBLIC_USER_SELECT} FROM users ORDER BY id`);
   res.json({
     status: "success",
     message: "Users fetched successfully",
@@ -112,150 +93,81 @@ const getUsers = async (req, res) => {
   });
 };
 
+// Self or admin.
 const getUserById = async (req, res) => {
-  let { id } = req.params;
-  const user = await User.find(id);
-  if (!user) {
-    return res.status(404).json({
-      status: "error",
-      message: "User not found",
-    });
+  const rows = await User.query(`SELECT ${PUBLIC_USER_SELECT} FROM users WHERE id = ?`, [req.params.id]);
+  if (rows.length === 0) {
+    return res.status(404).json({ status: "error", message: "User not found" });
   }
   res.json({
     status: "success",
     message: "User fetched successfully",
-    data: user,
+    data: rows[0],
   });
 };
 
-const updateUser = async (req, res) => {
+// Shared by PUT and PATCH: only UPDATABLE_USER_FIELDS are written, every other
+// key in the body is ignored.
+const applyUserUpdate = async (req, res) => {
   try {
     const { id } = req.params;
-    const { full_name, email, phone } = req.body;
+    const fields = pick(req.body, UPDATABLE_USER_FIELDS);
 
-    const sql = `
-      UPDATE users 
-      SET full_name = ?, email = ?, phone = ?, updated_at = NOW()
-      WHERE id = ?
-    `;
+    if (Object.keys(fields).length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: `Nothing to update. Allowed fields: ${UPDATABLE_USER_FIELDS.join(", ")}`,
+      });
+    }
+    if ("full_name" in fields && !String(fields.full_name).trim()) {
+      return res.status(400).json({ status: "error", message: "full_name cannot be empty" });
+    }
+    if ("email" in fields && !String(fields.email).trim()) {
+      return res.status(400).json({ status: "error", message: "email cannot be empty" });
+    }
 
-    await User.query(sql, [full_name, email, phone, id]);
+    const setClause = Object.keys(fields).map((key) => `${key} = ?`).join(", ");
+    const result = await User.query(`UPDATE users SET ${setClause}, updated_at = NOW() WHERE id = ?`, [
+      ...Object.values(fields),
+      id,
+    ]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
 
+    const rows = await User.query(`SELECT ${PUBLIC_USER_SELECT} FROM users WHERE id = ?`, [id]);
     res.json({
       status: "success",
       message: "User updated successfully",
+      data: rows[0],
     });
   } catch (error) {
-    console.error('Update user error:', error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to update user: " + error.message,
-    });
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ status: "error", message: "Email already exists" });
+    }
+    console.error("Update user error:", error);
+    res.status(500).json({ status: "error", message: "Failed to update user" });
   }
 };
 
-const partialUserUpdate = async (req, res) => {
-  let { id } = req.params;
-  const user = await User.find(id);
-  if (!user) {
-    return res.status(404).json({
-      status: "error",
-      message: "User not found",
-    });
-  }
-  user.fill(req.body);
+const updateUser = applyUserUpdate;
+const partialUserUpdate = applyUserUpdate;
 
-  await user.update();
-
-  res.json({
-    status: "success",
-    message: "User updated successfully",
-    data: user,
-  });
-};
-
+// Admin only.
 const deleteUser = async (req, res) => {
-  let { id } = req.params;
-  const deleted = await User.delete(id);
-  if (!deleted) {
-    return res.status(404).json({
-      status: "error",
-      message: "Failed to delete user",
-    });
+  const { id } = req.params;
+  if (Number(id) === req.user.id) {
+    return res.status(400).json({ status: "error", message: "You cannot delete your own account" });
+  }
+  const result = await User.query("DELETE FROM users WHERE id = ?", [id]);
+  if (result.affectedRows === 0) {
+    return res.status(404).json({ status: "error", message: "User not found" });
   }
 
   res.json({
     status: "success",
     message: "User deleted successfully",
   });
-};
-
-const apiLogin = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({
-        status: "error",
-        message: "Email and password are required",
-      });
-    }
-
-    // Check if the user exists
-    const user = await User.findByEmail(email);
-    if (!user) {
-      return res.status(401).json({
-        status: "error",
-        message: "Invalid email or password",
-      });
-    }
-
-    // Check if the password is correct
-    const isValidPassword = await compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        status: "error",
-        message: "Invalid email or password",
-      });
-    }
-
-    // Generate a token with user object - Fixed the property names
-    const token = jwt.sign(
-      {
-        user: {
-          id: user.id,           // Changed from user.user_id
-          email: user.email,     // Changed from user.username
-          full_name: user.full_name,  // Added full_name
-          role: user.role,
-        },
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    // Return both token and user data
-    res.json({
-      status: "success",
-      message: "Login successful",
-      data: { 
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          full_name: user.full_name,
-          role: user.role,
-          phone: user.phone
-        }
-      },
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      status: "error",
-      message: "Internal server error during login",
-    });
-  }
 };
 
 module.exports = {
@@ -265,5 +177,5 @@ module.exports = {
   updateUser,
   partialUserUpdate,
   deleteUser,
-  apiLogin,
+  UPDATABLE_USER_FIELDS,
 };

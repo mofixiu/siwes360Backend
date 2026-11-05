@@ -3,9 +3,11 @@ const Student = require("../models/Student");
 const Supervisor = require("../models/Supervisor");
 const Admin = require("../models/Admin");
 const Itf = require("../models/Itf");
+const crypto = require("crypto");
 const { hash, compare } = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const JWT_SECRET = process.env.JWT_SECRET || "what is your name";
+const { JWT_SECRET, JWT_EXPIRES_IN, JWT_ALGORITHM, PASSWORD_MIN_LENGTH, BCRYPT_ROUNDS } = require("../config/auth");
+const mailer = require("../utils/mailer");
 
 const login = async (req, res) => {
   try {
@@ -28,8 +30,8 @@ const login = async (req, res) => {
       });
     }
 
-    // Verify password
-    const isPasswordValid = await compare(password, user.password);
+    // Verify password (accounts created without one cannot sign in)
+    const isPasswordValid = Boolean(user.password) && (await compare(String(password), user.password));
     if (!isPasswordValid) {
       return res.status(401).json({
         status: "error",
@@ -73,7 +75,7 @@ const login = async (req, res) => {
         role: user.role 
       },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: JWT_EXPIRES_IN, algorithm: JWT_ALGORITHM }
     );
 
     // Remove password from response
@@ -117,6 +119,13 @@ const register = async (req, res) => {
       });
     }
 
+    if (String(password).length < PASSWORD_MIN_LENGTH) {
+      return res.status(400).json({
+        status: "error",
+        message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters long`,
+      });
+    }
+
     // Only allow supervisor registration through public endpoint
     if (role !== 'supervisor') {
       return res.status(403).json({
@@ -145,7 +154,7 @@ const register = async (req, res) => {
     // Create the user first
     const user = User.fill({
       email,
-      password: await hash(password, 10),
+      password: await hash(String(password), BCRYPT_ROUNDS),
       full_name,
       role,
       phone,
@@ -241,190 +250,237 @@ const getProfile = async (req, res) => {
   }
 };
 
-const forgotPassword = async (req, res) => {
-  const { email } = req.body;
+const passwordProblem = (password) => {
+  if (typeof password !== "string" || password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters long`;
+  }
+  return null;
+};
 
+// POST /api/auth/change-password  { current_password, new_password }
+const changePassword = async (req, res) => {
   try {
-    console.log('Forgot password request for:', email);
+    const { current_password, new_password } = req.body;
 
-    // Find user by email
-    const sql = "SELECT * FROM users WHERE email = ?";
-    const users = await User.query(sql, [email]);
-
-    if (!users || users.length === 0) {
-      return res.status(404).json({
+    if (!current_password || !new_password) {
+      return res.status(400).json({
         status: "error",
-        message: "No account found with this email address",
+        message: "current_password and new_password are required",
+      });
+    }
+    const problem = passwordProblem(new_password);
+    if (problem) {
+      return res.status(400).json({ status: "error", message: problem });
+    }
+    if (current_password === new_password) {
+      return res.status(400).json({
+        status: "error",
+        message: "New password must be different from the current one",
       });
     }
 
+    const rows = await User.query("SELECT password FROM users WHERE id = ?", [req.user.id]);
+    const currentHash = rows[0] && rows[0].password;
+    if (!currentHash || !(await compare(String(current_password), currentHash))) {
+      return res.status(400).json({ status: "error", message: "Current password is incorrect" });
+    }
+
+    await User.query("UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?", [
+      await hash(new_password, BCRYPT_ROUNDS),
+      req.user.id,
+    ]);
+    // A reset that was in progress is no longer needed. The table may not
+    // exist yet if database/002_password_resets.sql hasn't been run.
+    await User.query("DELETE FROM password_resets WHERE user_id = ?", [req.user.id]).catch((e) => {
+      if (e.code !== "ER_NO_SUCH_TABLE") throw e;
+    });
+
+    res.json({ status: "success", message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ status: "error", message: "Failed to change password" });
+  }
+};
+
+// ---- Password reset by emailed code -------------------------------------
+// 1. POST /forgot-password   { email }                       -> emails a 6-digit code
+// 2. POST /verify-reset-otp  { email, otp }                  -> { reset_token }
+// 3. POST /reset-password    { reset_token, new_password }   -> password changed
+// Codes and tokens are stored only as hashes in `password_resets`
+// (database/002_password_resets.sql). Codes last 10 minutes and allow 5 tries;
+// reset tokens last 15 minutes and work once.
+const OTP_TTL_MINUTES = 10;
+const OTP_MAX_ATTEMPTS = 5;
+const RESET_TOKEN_TTL_MINUTES = 15;
+const RESEND_COOLDOWN_SECONDS = 60;
+
+// Answer for the reset endpoints when the password_resets table is missing.
+const resetTableMissing = (error, res) => {
+  if (error.code !== "ER_NO_SUCH_TABLE") return false;
+  console.error("password_resets table is missing: run database/002_password_resets.sql");
+  res.status(503).json({
+    status: "error",
+    message: "Password reset is not set up on this server yet. Ask your school admin to reset your password.",
+  });
+  return true;
+};
+
+const sha256 = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+
+const GENERIC_FORGOT_MESSAGE =
+  "If an account exists for that email, a 6-digit reset code has been sent to it.";
+
+const forgotPassword = async (req, res) => {
+  try {
+    if (!mailer.isConfigured()) {
+      return res.status(503).json({
+        status: "error",
+        message: "Password reset by email is not set up on this server yet. Ask your school admin to reset your password.",
+      });
+    }
+
+    const email = typeof req.body.email === "string" ? req.body.email.trim() : "";
+    if (!email) {
+      return res.status(400).json({ status: "error", message: "Email is required" });
+    }
+
+    const users = await User.query("SELECT id, email, full_name FROM users WHERE email = ?", [email]);
+    // Same answer whether or not the account exists, so the endpoint can't be
+    // used to find out who has an account.
+    if (users.length === 0) {
+      return res.json({ status: "success", message: GENERIC_FORGOT_MESSAGE });
+    }
     const user = users[0];
 
-    // Generate 6-digit OTP
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const recent = await User.query(
+      "SELECT 1 FROM password_resets WHERE user_id = ? AND created_at > NOW() - INTERVAL ? SECOND",
+      [user.id, RESEND_COOLDOWN_SECONDS]
+    );
+    if (recent.length > 0) {
+      return res.json({ status: "success", message: GENERIC_FORGOT_MESSAGE });
+    }
 
-    // Store OTP in database
-    const updateSql = `
-      UPDATE users 
-      SET reset_otp = ?, reset_otp_expiry = ? 
-      WHERE id = ?
-    `;
-    await User.query(updateSql, [otp, otpExpiry, user.id]);
+    const otp = crypto.randomInt(0, 1000000).toString().padStart(6, "0");
+    await User.query(
+      `REPLACE INTO password_resets (user_id, otp_hash, otp_expires_at, attempts, created_at)
+       VALUES (?, ?, NOW() + INTERVAL ? MINUTE, 0, NOW())`,
+      [user.id, await hash(otp, BCRYPT_ROUNDS), OTP_TTL_MINUTES]
+    );
 
-    console.log(`OTP generated for ${email}: ${otp}`);
-    console.log(`OTP expires at: ${otpExpiry}`);
+    try {
+      await mailer.sendMail({
+        to: user.email,
+        subject: "Your SIWES360 password reset code",
+        text:
+          `Hello ${user.full_name || ""},\n\n` +
+          `Your SIWES360 password reset code is ${otp}. It expires in ${OTP_TTL_MINUTES} minutes.\n\n` +
+          "If you didn't ask to reset your password, you can ignore this email.",
+      });
+    } catch (mailError) {
+      console.error("Reset email failed:", mailError.message);
+      await User.query("DELETE FROM password_resets WHERE user_id = ?", [user.id]);
+      return res.status(502).json({
+        status: "error",
+        message: "We couldn't send the reset email. Please try again later.",
+      });
+    }
 
-    // TODO: Send OTP via email (for now, just return it in response for testing)
-    // In production, use a service like SendGrid, AWS SES, or Nodemailer
-
-    res.json({
-      status: "success",
-      message: "Password reset OTP has been sent to your email",
-      // Remove this in production:
-      otp: otp, // Only for development/testing
-    });
+    res.json({ status: "success", message: GENERIC_FORGOT_MESSAGE });
   } catch (error) {
+    if (resetTableMissing(error, res)) return;
     console.error("Forgot password error:", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to process password reset request: " + error.message,
-    });
+    res.status(500).json({ status: "error", message: "Failed to process password reset request" });
   }
 };
 
 const verifyResetOTP = async (req, res) => {
-  const { email, otp } = req.body;
-
   try {
-    console.log('Verifying OTP for:', email);
+    const email = typeof req.body.email === "string" ? req.body.email.trim() : "";
+    const otp = typeof req.body.otp === "string" ? req.body.otp.trim() : String(req.body.otp ?? "");
+    const invalid = () =>
+      res.status(400).json({ status: "error", message: "Invalid or expired code. Request a new one." });
 
-    // Find user by email
-    const sql = "SELECT * FROM users WHERE email = ?";
-    const users = await User.query(sql, [email]);
+    if (!email || !/^\d{6}$/.test(otp)) return invalid();
 
-    if (!users || users.length === 0) {
-      return res.status(404).json({
-        status: "error",
-        message: "User not found",
-      });
+    const rows = await User.query(
+      `SELECT pr.user_id, pr.otp_hash, pr.attempts
+         FROM password_resets pr
+         JOIN users u ON u.id = pr.user_id
+        WHERE u.email = ? AND pr.otp_expires_at > NOW()`,
+      [email]
+    );
+    if (rows.length === 0) return invalid();
+    const reset = rows[0];
+
+    if (reset.attempts >= OTP_MAX_ATTEMPTS) {
+      await User.query("DELETE FROM password_resets WHERE user_id = ?", [reset.user_id]);
+      return invalid();
     }
 
-    const user = users[0];
-
-    // Check if OTP matches and is not expired
-    if (user.reset_otp !== otp) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid OTP",
-      });
+    if (!(await compare(otp, reset.otp_hash))) {
+      await User.query("UPDATE password_resets SET attempts = attempts + 1 WHERE user_id = ?", [reset.user_id]);
+      return invalid();
     }
 
-    const now = new Date();
-    const expiry = new Date(user.reset_otp_expiry);
-
-    if (now > expiry) {
-      return res.status(400).json({
-        status: "error",
-        message: "OTP has expired. Please request a new one.",
-      });
-    }
-
-    // Generate a reset token for password change
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetTokenExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
-
-    // Store reset token
-    const updateSql = `
-      UPDATE users 
-      SET reset_token = ?, reset_token_expiry = ?
-      WHERE id = ?
-    `;
-    await User.query(updateSql, [resetToken, resetTokenExpiry, user.id]);
-
-    console.log('OTP verified successfully for:', email);
+    // The code is spent; hand out a single-use token for the next step.
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    await User.query(
+      `UPDATE password_resets
+          SET otp_expires_at = NOW(), reset_token_hash = ?, reset_token_expires_at = NOW() + INTERVAL ? MINUTE
+        WHERE user_id = ?`,
+      [sha256(resetToken), RESET_TOKEN_TTL_MINUTES, reset.user_id]
+    );
 
     res.json({
       status: "success",
-      message: "OTP verified successfully",
-      data: {
-        reset_token: resetToken,
-        email: user.email,
-      },
+      message: "Code verified",
+      data: { reset_token: resetToken, email },
     });
   } catch (error) {
+    if (resetTableMissing(error, res)) return;
     console.error("Verify OTP error:", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to verify OTP: " + error.message,
-    });
+    res.status(500).json({ status: "error", message: "Failed to verify code" });
   }
 };
 
 const resetPassword = async (req, res) => {
-  const { reset_token, new_password } = req.body;
-
   try {
-    console.log('Reset password request with token');
+    const { reset_token, new_password } = req.body;
 
-    if (!new_password || new_password.length < 8) {
-      return res.status(400).json({
-        status: "error",
-        message: "Password must be at least 8 characters long",
-      });
+    const problem = passwordProblem(new_password);
+    if (problem) {
+      return res.status(400).json({ status: "error", message: problem });
+    }
+    if (typeof reset_token !== "string" || !reset_token) {
+      return res.status(400).json({ status: "error", message: "Invalid or expired reset token" });
     }
 
-    // Find user by reset token
-    const sql = "SELECT * FROM users WHERE reset_token = ?";
-    const users = await User.query(sql, [reset_token]);
-
-    if (!users || users.length === 0) {
+    const rows = await User.query(
+      "SELECT user_id FROM password_resets WHERE reset_token_hash = ? AND reset_token_expires_at > NOW()",
+      [sha256(reset_token)]
+    );
+    if (rows.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Invalid or expired reset token",
+        message: "Invalid or expired reset token. Please request a new code.",
       });
     }
+    const userId = rows[0].user_id;
 
-    const user = users[0];
-
-    // Check if token is expired
-    const now = new Date();
-    const expiry = new Date(user.reset_token_expiry);
-
-    if (now > expiry) {
-      return res.status(400).json({
-        status: "error",
-        message: "Reset token has expired. Please request a new password reset.",
-      });
-    }
-
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(new_password, 10);
-
-    // Update password and clear reset fields
-    const updateSql = `
-      UPDATE users 
-      SET password = ?, 
-          reset_otp = NULL, 
-          reset_otp_expiry = NULL,
-          reset_token = NULL,
-          reset_token_expiry = NULL
-      WHERE id = ?
-    `;
-    await User.query(updateSql, [hashedPassword, user.id]);
-
-    console.log('Password reset successfully for user:', user.email);
+    await User.query("UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?", [
+      await hash(new_password, BCRYPT_ROUNDS),
+      userId,
+    ]);
+    await User.query("DELETE FROM password_resets WHERE user_id = ?", [userId]);
 
     res.json({
       status: "success",
-      message: "Password has been reset successfully. You can now login with your new password.",
+      message: "Password has been reset. You can now log in with your new password.",
     });
   } catch (error) {
+    if (resetTableMissing(error, res)) return;
     console.error("Reset password error:", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to reset password: " + error.message,
-    });
+    res.status(500).json({ status: "error", message: "Failed to reset password" });
   }
 };
 
@@ -432,6 +488,7 @@ module.exports = {
   login,
   register,
   getProfile,
+  changePassword,
   forgotPassword,
   verifyResetOTP,
   resetPassword,

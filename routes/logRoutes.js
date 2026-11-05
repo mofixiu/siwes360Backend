@@ -40,24 +40,30 @@ const upload = multer({
   }
 });
 
-// Fix the import - use correct function names with capital L
-const { 
-  storeDailyLog,        // Changed from storeDailylog
-  getDailylogs, 
-  getDailylogById, 
+const {
+  storeDailyLog,
+  getDailylogs,
+  getDailylogById,
   getDailylogsByStudent,
   updateDailylog,
   partialDailylogUpdate,
-  approveDailyLog,      // Changed from approveDailylog
-  rejectDailyLog,       // Changed from rejectDailylog
-  deleteDailylog 
+  approveDailyLog,
+  rejectDailyLog,
+  deleteDailylog,
 } = require("../controllers/dailylogController.js");
-const verifyToken = require("../middlewares/verifyToken");
+const allowRoles = require("../middlewares/allowRoles");
+const {
+  studentViewer,
+  loadDailyLog,
+  dailyLogViewer,
+  dailyLogAuthor,
+  dailyLogSupervisor,
+} = require("../middlewares/access");
 
 // Custom error handler for multer
 const handleMulterError = (err, req, res, next) => {
   console.error('Multer middleware error:', err);
-  
+
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
       status: 'error',
@@ -73,32 +79,27 @@ const handleMulterError = (err, req, res, next) => {
   next();
 };
 
-// Student logs with better error handling
+// Mounted behind verifyToken in app.js.
+
+// Students write their own logs; the controller takes student_id from the token.
 router.post(
-  "/", 
-  verifyToken,
-  (req, res, next) => {
-    console.log('\n=== New log upload request ===');
-    console.log('Headers:', req.headers);
-    console.log('Content-Type:', req.headers['content-type']);
-    next();
-  },
+  "/",
+  allowRoles("student"),
   upload.array('attachments', 5),
   handleMulterError,
-  storeDailyLog  // Changed from storeDailylog
+  storeDailyLog
 );
 
-router.get("/", getDailylogs);
-router.get("/:id", getDailylogById);
-router.get("/student/:student_id", getDailylogsByStudent);
-router.put("/:id", verifyToken, updateDailylog);
-router.patch("/:id", verifyToken, partialDailylogUpdate);
+router.get("/", allowRoles("admin", "itf"), getDailylogs);
+router.get("/student/:student_id", studentViewer("student_id"), getDailylogsByStudent);
+router.get("/:id", loadDailyLog, dailyLogViewer, getDailylogById);
+router.put("/:id", loadDailyLog, dailyLogAuthor, updateDailylog);
+router.patch("/:id", loadDailyLog, dailyLogAuthor, partialDailylogUpdate);
 
-// Supervisor actions - use correct function names
-router.put("/:id/approve", verifyToken, approveDailyLog);  // Changed from approveDailylog
-router.put("/:id/reject", verifyToken, rejectDailyLog);    // Changed from rejectDailylog
+// Only the student's own supervisor reviews a log.
+router.put("/:id/approve", loadDailyLog, dailyLogSupervisor, approveDailyLog);
+router.put("/:id/reject", loadDailyLog, dailyLogSupervisor, rejectDailyLog);
 
-// Delete
-router.delete("/:id", verifyToken, deleteDailylog);
+router.delete("/:id", loadDailyLog, dailyLogAuthor, deleteDailylog);
 
 module.exports = router;

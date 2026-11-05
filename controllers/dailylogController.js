@@ -1,9 +1,9 @@
-const { get } = require("../app");
 const Dailylog = require("../models/Dailylog");
 const LogAttachment = require("../models/LogAttachment");
 const fs = require('fs').promises;
 const path = require('path');
 const { createNotification } = require('./notificationController');
+const { pick } = require('../utils/sanitize');
 
 const storeDailyLog = async (req, res) => {
     try {
@@ -11,8 +11,9 @@ const storeDailyLog = async (req, res) => {
         console.log('Body:', req.body);
         console.log('Files:', req.files?.length || 0);
         
+        // The author is always the signed-in student; student_id in the body is ignored.
+        const student_id = req.user.id;
         let {
-            student_id,
             log_date,
             description,
             skills_acquired,
@@ -221,104 +222,43 @@ const getDailylogsByStudent = async (req, res) => {
   }
 };
 
-const updateDailylog = async (req, res) => {
-  let { id } = req.params;
-  let { student_id, log_date, description, skills_acquired, challenges_faced, supervisor_comment, status } = req.body;
-  
-  try {
-    const dailylog = await Dailylog.find(id);
-    if (!dailylog) {
-      return res.status(404).json({
-        status: "error",
-        message: "Dailylog not found",
-      });
-    }
+// Fields the author may change. Status and supervisor_comment are set only by
+// the approve/reject endpoints.
+const EDITABLE_LOG_FIELDS = ['description', 'skills_acquired', 'challenges_faced', 'log_date'];
 
-    dailylog.fill({ 
-      student_id, 
-      log_date, 
-      description, 
-      skills_acquired,
-      challenges_faced,
-      supervisor_comment, 
-      status 
-    });
-    await dailylog.update();
-
-    res.json({
-      status: "success",
-      message: "Dailylog updated successfully",
-      data: dailylog,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "error",
-      message: "Failed to update dailylog: " + error.message,
-    });
-  }
-};
-
+// PUT and PATCH /logs/:id. Routes have already checked the caller wrote this log
+// and that it is not approved (req.dailyLog). Editing a rejected log resubmits it.
 const partialDailylogUpdate = async (req, res) => {
-  let { id } = req.params;
-  
+  const { id } = req.params;
+
   try {
-    // First check if the log exists
-    const checkSql = "SELECT id FROM daily_logs WHERE id = ?";
-    const existingLogs = await Dailylog.query(checkSql, [id]);
-    
-    if (!existingLogs || existingLogs.length === 0) {
-      return res.status(404).json({
-        status: "error",
-        message: "Dailylog not found",
-      });
+    const fields = pick(req.body, EDITABLE_LOG_FIELDS);
+    if (typeof fields.log_date === 'string' && fields.log_date.includes('T')) {
+      fields.log_date = fields.log_date.split('T')[0];
     }
 
-    // Build dynamic UPDATE query based on provided fields
-    const updateFields = [];
-    const updateValues = [];
-    
-    if (req.body.description !== undefined) {
-      updateFields.push('description = ?');
-      updateValues.push(req.body.description);
-    }
-    if (req.body.skills_acquired !== undefined) {
-      updateFields.push('skills_acquired = ?');
-      updateValues.push(req.body.skills_acquired);
-    }
-    if (req.body.challenges_faced !== undefined) {
-      updateFields.push('challenges_faced = ?');
-      updateValues.push(req.body.challenges_faced);
-    }
-    if (req.body.log_date !== undefined) {
-      updateFields.push('log_date = ?');
-      updateValues.push(req.body.log_date);
-    }
-    if (req.body.status !== undefined) {
-      updateFields.push('status = ?');
-      updateValues.push(req.body.status);
-    }
-    if (req.body.supervisor_comment !== undefined) {
-      updateFields.push('supervisor_comment = ?');
-      updateValues.push(req.body.supervisor_comment);
-    }
-
-    if (updateFields.length === 0) {
+    if (Object.keys(fields).length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "No fields to update",
+        message: `No fields to update. Allowed fields: ${EDITABLE_LOG_FIELDS.join(', ')}`,
       });
     }
+    if ('description' in fields && !String(fields.description).trim()) {
+      return res.status(400).json({ status: "error", message: "description cannot be empty" });
+    }
 
-    // Add updated_at timestamp
+    const updateFields = Object.keys(fields).map((key) => `${key} = ?`);
+    const updateValues = Object.values(fields);
+
+    if (req.dailyLog.status === 'rejected') {
+      updateFields.push("status = 'pending'");
+    }
     updateFields.push('updated_at = NOW()');
-    
-    // Add the id to the end of values array for the WHERE clause
     updateValues.push(id);
 
     const updateSql = `UPDATE daily_logs SET ${updateFields.join(', ')} WHERE id = ?`;
     await Dailylog.query(updateSql, updateValues);
 
-    // Fetch the updated log
     const updatedLog = await Dailylog.find(id);
 
     res.json({
@@ -327,13 +267,15 @@ const partialDailylogUpdate = async (req, res) => {
       data: updatedLog,
     });
   } catch (error) {
-    console.error('Partial update error:', error);
+    console.error('Update dailylog error:', error);
     res.status(500).json({
       status: "error",
-      message: "Failed to update dailylog: " + error.message,
+      message: "Failed to update dailylog",
     });
   }
 };
+
+const updateDailylog = partialDailylogUpdate;
 
 const approveDailyLog = async (req, res) => {
   let { id } = req.params;

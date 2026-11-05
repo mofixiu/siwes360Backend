@@ -1,20 +1,23 @@
 const { Router } = require("express");
 const router = Router();
 
-const { 
-  storeUser, 
-  getUsers, 
-  getUserById, 
-  partialUserUpdate, 
+const {
+  storeUser,
+  getUsers,
+  getUserById,
+  partialUserUpdate,
   deleteUser,
-  updateUser // Add this import
+  updateUser,
 } = require("../controllers/userController");
+const allowRoles = require("../middlewares/allowRoles");
+const { selfOrRoles } = require("../middlewares/access");
 
-router.post("/", storeUser);
-router.get("/", getUsers);
-router.get("/:id", getUserById);
-router.patch("/:id", partialUserUpdate);
-router.put("/:id", updateUser); // Add this route
-router.delete("/:id", deleteUser);
+// Mounted behind verifyToken in app.js.
+router.post("/", allowRoles("admin"), storeUser);
+router.get("/", allowRoles("admin"), getUsers);
+router.get("/:id", selfOrRoles("id", "admin"), getUserById);
+router.patch("/:id", selfOrRoles("id", "admin"), partialUserUpdate);
+router.put("/:id", selfOrRoles("id", "admin"), updateUser);
+router.delete("/:id", allowRoles("admin"), deleteUser);
 
 module.exports = router;

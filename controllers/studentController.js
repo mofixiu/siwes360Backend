@@ -2,10 +2,20 @@ const Student = require("../models/Student");
 const User = require("../models/User");
 const Supervisor = require("../models/Supervisor");
 const Dailylog = require("../models/Dailylog");
+const { pick } = require("../utils/sanitize");
 
+// Fields an admin may set on a student record. Students change their own
+// internship details through PATCH /:id/internship-dates instead.
+const ADMIN_STUDENT_FIELDS = ["matric_no", "department", "level", "supervisor_id", "school_id"];
+
+// Admin only: attach a student record to an existing student account.
 const storeStudent = async (req, res) => {
-    let { user_id, matric_no, department, level, supervisor_id, school_id } = req.body;
-    const student = Student.fill({ user_id, matric_no, department, level, supervisor_id, school_id });
+    const userId = Number(req.body.user_id);
+    const users = await User.query("SELECT role FROM users WHERE id = ?", [userId]);
+    if (users.length === 0 || users[0].role !== "student") {
+        return res.status(400).json({ status: "error", message: "user_id must be an existing student account" });
+    }
+    const student = Student.fill({ user_id: userId, ...pick(req.body, ADMIN_STUDENT_FIELDS) });
     await student.insert();
     res.json({
         status: "success",
@@ -67,23 +77,34 @@ const getStudentById = async (req, res) => {
     }
 };
 
+// Admin only. Only ADMIN_STUDENT_FIELDS are written.
 const partialStudentUpdate = async (req, res) => {
-    let { id } = req.params;
-    const student = await Student.find(id);
-    if (!student) {
+    const { id } = req.params;
+    const fields = pick(req.body, ADMIN_STUDENT_FIELDS);
+    if (Object.keys(fields).length === 0) {
+        return res.status(400).json({
+            status: "error",
+            message: `Nothing to update. Allowed fields: ${ADMIN_STUDENT_FIELDS.join(", ")}`,
+        });
+    }
+
+    const setClause = Object.keys(fields).map((key) => `${key} = ?`).join(", ");
+    const result = await Student.query(`UPDATE students SET ${setClause}, updated_at = NOW() WHERE user_id = ?`, [
+        ...Object.values(fields),
+        id,
+    ]);
+    if (result.affectedRows === 0) {
         return res.status(404).json({
             status: "error",
             message: "Student not found",
         });
     }
-    student.fill(req.body);
 
-    await student.update();
-
+    const rows = await Student.query("SELECT * FROM students WHERE user_id = ?", [id]);
     res.json({
         status: "success",
         message: "Student updated successfully",
-        data: student,
+        data: rows[0],
     });
 };
 
@@ -149,6 +170,15 @@ const updateInternshipDates = async (req, res) => {
     }
 
     if (supervisor_id !== undefined) {
+      // Students pick their supervisor from search; make sure it is a real one.
+      // null unlinks the supervisor.
+      const supervisors = supervisor_id === null ? [true] : await Supervisor.query('SELECT 1 FROM supervisors WHERE user_id = ?', [supervisor_id]);
+      if (supervisors.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "supervisor_id is not a registered supervisor",
+        });
+      }
       updateFields.push('supervisor_id = ?');
       updateValues.push(supervisor_id);
     }

@@ -5,21 +5,13 @@ const {
   markNotificationAsRead,
   markAllAsRead,
   deleteNotification,
-  createNotification, // Add this
 } = require("../controllers/notificationController");
+const { selfOrRoles, notificationOwner } = require("../middlewares/access");
 
-// Get all notifications for a user
-router.get("/user/:userId", getNotificationsByUser);
-
-// Mark single notification as read
-router.put("/:id/read", markNotificationAsRead);
-
-// Mark all notifications as read for a user
-router.put("/user/:userId/read-all", markAllAsRead);
-
-// Delete a notification
-router.delete("/:id", deleteNotification);
-
-
+// Mounted behind verifyToken in app.js. Notifications are private to their owner.
+router.get("/user/:userId", selfOrRoles("userId"), getNotificationsByUser);
+router.put("/user/:userId/read-all", selfOrRoles("userId"), markAllAsRead);
+router.put("/:id/read", notificationOwner, markNotificationAsRead);
+router.delete("/:id", notificationOwner, deleteNotification);
 
 module.exports = router;

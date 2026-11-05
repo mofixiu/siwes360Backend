@@ -8,6 +8,7 @@ const app = express();
 
 // 🔑 Middlewares
 const verifyToken = require('./middlewares/verifyToken');
+const { redact } = require('./utils/sanitize');
 
 // Routes
 const authRoutes = require("./routes/authRoutes");
@@ -38,7 +39,7 @@ app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   console.log(`${timestamp} - ${req.method} ${req.path}`);
   if (req.body && Object.keys(req.body).length > 0) {
-    console.log('Body:', req.body);
+    console.log('Body:', redact(req.body)); // passwords, codes and tokens hidden
   }
   if (req.files) {
     console.log('Files:', req.files.map(f => f.fieldname));
@@ -102,12 +103,21 @@ app.use((req, res) => {
     });
 });
 
-// Start server
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`🌐 Server URL: http://localhost:${PORT}`);
-    console.log(`🧪 Test endpoint: http://localhost:${PORT}/test`);
+// Errors thrown in async handlers: answer in JSON and keep details in the log.
+app.use((err, req, res, next) => {
+    console.error(`500 - ${req.method} ${req.originalUrl}:`, err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ status: 'error', message: 'Something went wrong on the server' });
 });
+
+// Start the server when run directly (`node app.js`), not when the tests import it.
+if (require.main === module) {
+    const PORT = process.env.PORT || 3001;
+    app.listen(PORT, () => {
+        console.log(`✅ Server running on port ${PORT}`);
+        console.log(`🌐 Server URL: http://localhost:${PORT}`);
+        console.log(`🧪 Test endpoint: http://localhost:${PORT}/test`);
+    });
+}
 
 module.exports = app;

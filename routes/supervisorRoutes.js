@@ -1,26 +1,29 @@
 const { Router } = require("express");
 const router = Router();
 
-const { 
-  storeSupervisor, 
-  getSupervisors, 
-  getSupervisorById, 
-  partialSupervisorUpdate, 
+const {
+  storeSupervisor,
+  getSupervisors,
+  getSupervisorById,
+  partialSupervisorUpdate,
   deleteSupervisor,
   getSupervisorStudents,
-  getSupervisorDashboard 
+  getSupervisorDashboard,
 } = require("../controllers/supervisorController");
-const verifyToken = require("../middlewares/verifyToken");
+const allowRoles = require("../middlewares/allowRoles");
+const { selfOrRoles } = require("../middlewares/access");
 
-// Supervisor CRUD routes
-router.post("/", storeSupervisor);
-router.get("/", getSupervisors);
-router.get("/:id", getSupervisorById);
-router.patch("/:id", partialSupervisorUpdate);
-router.delete("/:id", deleteSupervisor);
+// Mounted behind verifyToken in app.js.
+router.post("/", allowRoles("admin"), storeSupervisor);
+router.get("/", allowRoles("admin", "itf"), getSupervisors);
+// A supervisor's name, organisation and contact details are already visible to
+// every student through /students/search/supervisors, so any signed-in user may
+// read one profile.
+router.get("/:id", allowRoles("student", "supervisor", "admin", "itf"), getSupervisorById);
+router.patch("/:id", selfOrRoles("id", "admin"), partialSupervisorUpdate);
+router.delete("/:id", allowRoles("admin"), deleteSupervisor);
 
-// Protected routes
-router.get("/:id/students", verifyToken, getSupervisorStudents);
-router.get("/:id/dashboard", verifyToken, getSupervisorDashboard);
+router.get("/:id/students", selfOrRoles("id", "admin", "itf"), getSupervisorStudents);
+router.get("/:id/dashboard", selfOrRoles("id", "admin", "itf"), getSupervisorDashboard);
 
 module.exports = router;
