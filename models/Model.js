@@ -32,7 +32,7 @@ class Model {
     console.log(`Finding in table: ${tableName}`);
     
     // Tables that use 'id' as primary key only (no user_id)
-    const idOnlyTables = ['daily_logs', 'log_attachments', 'notifications', 'schools'];
+    const idOnlyTables = ['users', 'grades', 'daily_logs', 'log_attachments', 'notifications', 'schools'];
     
     // Tables that use 'user_id' as primary key only (no id column)
     const userIdOnlyTables = ['supervisors', 'students', 'coordinators', 'admins', 'itf'];
@@ -112,7 +112,7 @@ class Model {
     console.log(`Deleting from table: ${tableName}`);
     
     // Tables that use 'id' as primary key only (no user_id)
-    const idOnlyTables = ['daily_logs', 'log_attachments', 'notifications', 'schools'];
+    const idOnlyTables = ['users', 'grades', 'daily_logs', 'log_attachments', 'notifications', 'schools'];
     
     // Tables that use 'user_id' as primary key only (no id column)
     const userIdOnlyTables = ['supervisors', 'students', 'coordinators', 'admins', 'itf'];

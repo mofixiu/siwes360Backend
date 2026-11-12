@@ -460,6 +460,19 @@ test("verify-reset-otp gives up after 5 wrong codes", async () => {
   assert.equal(right.status, 400);
 });
 
+// ---- Automatic sign-in ------------------------------------------------------
+
+test("the app's automatic sign-in can load the signed-in profile", async () => {
+  // GET /auth/profile used to fail for every user (the generic finder looked
+  // for a user_id column on users), so the app signed everyone out on launch.
+  for (const key of ["studentX", "sup1", "adminA", "itf1"]) {
+    const res = await api("GET", "/auth/profile", { token: tokens[key] });
+    assert.equal(res.status, 200, key);
+    assert.equal(res.body.data.user.id, ids[key]);
+    assert.ok(res.body.data.role_data, `${key} role data`);
+  }
+});
+
 // ---- Across every response above ------------------------------------------
 
 test("no response in this run contained a bcrypt hash", () => {
