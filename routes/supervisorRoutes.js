@@ -9,6 +9,7 @@ const {
   deleteSupervisor,
   getSupervisorStudents,
   getSupervisorDashboard,
+  getSupervisorQueue,
 } = require("../controllers/supervisorController");
 const allowRoles = require("../middlewares/allowRoles");
 const { selfOrRoles } = require("../middlewares/access");
@@ -23,7 +24,10 @@ router.get("/:id", allowRoles("student", "supervisor", "admin", "itf"), getSuper
 router.patch("/:id", selfOrRoles("id", "admin"), partialSupervisorUpdate);
 router.delete("/:id", allowRoles("admin"), deleteSupervisor);
 
-router.get("/:id/students", selfOrRoles("id", "admin", "itf"), getSupervisorStudents);
-router.get("/:id/dashboard", selfOrRoles("id", "admin", "itf"), getSupervisorDashboard);
+// A supervisor can have students from several schools, so school admins use
+// /api/admin/supervisors, which counts only their own school's students.
+router.get("/:id/students", selfOrRoles("id", "itf"), getSupervisorStudents);
+router.get("/:id/dashboard", selfOrRoles("id", "itf"), getSupervisorDashboard);
+router.get("/:id/queue", selfOrRoles("id"), getSupervisorQueue);
 
 module.exports = router;

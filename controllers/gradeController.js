@@ -33,9 +33,15 @@ const storeGrade = async (req, res) => {
     });
 };
 
-// Admin and ITF only.
+// Admin: grades of their own school's students. ITF: every grade.
 const getGrades = async (req, res) => {
-    const grades = await Grade.fetch();
+    const grades = req.user.role === "admin"
+        ? await Grade.query(
+              `SELECT g.* FROM grades g JOIN students s ON s.user_id = g.student_id
+                WHERE s.school_id = ?`,
+              [await adminSchoolId(req.user.id)]
+          )
+        : await Grade.fetch();
     res.json({
         status: "success",
         message: "Grades fetched successfully",

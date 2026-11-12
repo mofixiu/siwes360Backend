@@ -5,6 +5,7 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
+    "seed:demo": "node database/seed_demo.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "author": "Mofiyinfoluwa Ebo",

@@ -1,5 +1,7 @@
 const Supervisor = require("../models/Supervisor");
 const Student = require("../models/Student");
+const weeks = require("../utils/weeks");
+const { signoffsFor } = require("../services/oversight");
 
 const storeSupervisor = async (req, res) => {
     let { user_id, organization, position } = req.body;
@@ -280,6 +282,82 @@ const getSupervisorDashboard = async (req, res) => {
   }
 };
 
+// GET /api/supervisors/:id/queue (the supervisor themself)
+// The supervisor's work, a week at a time:
+//   review - weeks with entries still pending, oldest first
+//   sign   - weeks with every entry reviewed, not signed off yet, from that week's Friday
+const getSupervisorQueue = async (req, res) => {
+  const { id } = req.params;
+  const today = weeks.today();
+
+  const students = await Student.query(
+    `SELECT s.user_id, u.full_name, s.matric_no, s.internship_start_date
+       FROM students s JOIN users u ON u.id = s.user_id
+      WHERE s.supervisor_id = ?
+      ORDER BY u.full_name ASC`,
+    [id]
+  );
+  const ids = students.map((s) => s.user_id);
+  const logs = ids.length
+    ? await Student.query(
+        `SELECT id, student_id, log_date, description, status, supervisor_comment
+           FROM daily_logs WHERE student_id IN (${ids.map(() => "?").join(", ")})
+          ORDER BY log_date ASC`,
+        ids
+      )
+    : [];
+  const signoffs = await signoffsFor(ids);
+  const signed = new Set((signoffs || []).map((s) => `${s.student_id}:${s.week_number}`));
+
+  const groups = new Map();
+  const studentById = new Map(students.map((s) => [s.user_id, s]));
+  for (const log of logs) {
+    const student = studentById.get(log.student_id);
+    if (!student.internship_start_date) continue;
+    const weekNumber = weeks.weekNumber(student.internship_start_date, log.log_date);
+    const key = `${log.student_id}:${weekNumber}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        student_id: student.user_id,
+        full_name: student.full_name,
+        matric_no: student.matric_no,
+        week_number: weekNumber,
+        ...weeks.weekRange(student.internship_start_date, weekNumber),
+        signed_off: signed.has(key),
+        entries: [],
+      });
+    }
+    groups.get(key).entries.push(log);
+  }
+
+  const review = [];
+  const sign = [];
+  for (const group of groups.values()) {
+    const count = (status) => group.entries.filter((e) => e.status === status).length;
+    const summary = { ...group, pending: count("pending"), approved: count("approved"), rejected: count("rejected") };
+    if (summary.pending > 0) review.push(summary);
+    else if (signoffs && !group.signed_off && today >= weeks.addDays(group.week_start, 4)) sign.push(summary);
+  }
+  const oldestFirst = (a, b) => a.week_start.localeCompare(b.week_start) || a.full_name.localeCompare(b.full_name);
+  review.sort(oldestFirst);
+  sign.sort(oldestFirst);
+
+  res.json({
+    status: "success",
+    data: {
+      today,
+      signoffs_available: signoffs !== null,
+      stats: {
+        students: students.length,
+        pending_entries: review.reduce((n, g) => n + g.pending, 0),
+        weeks_to_sign: sign.length,
+      },
+      review,
+      sign,
+    },
+  });
+};
+
 module.exports = {
     storeSupervisor,
     getSupervisors,
@@ -288,4 +366,5 @@ module.exports = {
     deleteSupervisor,
     getSupervisorStudents,
     getSupervisorDashboard,
+    getSupervisorQueue,
 };

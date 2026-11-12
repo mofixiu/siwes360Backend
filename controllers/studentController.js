@@ -3,19 +3,25 @@ const User = require("../models/User");
 const Supervisor = require("../models/Supervisor");
 const Dailylog = require("../models/Dailylog");
 const { pick } = require("../utils/sanitize");
+const { adminSchoolId } = require("../middlewares/access");
 
 // Fields an admin may set on a student record. Students change their own
 // internship details through PATCH /:id/internship-dates instead.
 const ADMIN_STUDENT_FIELDS = ["matric_no", "department", "level", "supervisor_id", "school_id"];
 
-// Admin only: attach a student record to an existing student account.
+// Admin only: attach a student record to an existing student account. The
+// student is always placed in the admin's own school.
 const storeStudent = async (req, res) => {
     const userId = Number(req.body.user_id);
     const users = await User.query("SELECT role FROM users WHERE id = ?", [userId]);
     if (users.length === 0 || users[0].role !== "student") {
         return res.status(400).json({ status: "error", message: "user_id must be an existing student account" });
     }
-    const student = Student.fill({ user_id: userId, ...pick(req.body, ADMIN_STUDENT_FIELDS) });
+    const schoolId = await adminSchoolId(req.user.id);
+    if (schoolId === null) {
+        return res.status(409).json({ status: "error", message: "Your admin account is not linked to an institution" });
+    }
+    const student = Student.fill({ user_id: userId, ...pick(req.body, ADMIN_STUDENT_FIELDS), school_id: schoolId });
     await student.insert();
     res.json({
         status: "success",
@@ -24,8 +30,11 @@ const storeStudent = async (req, res) => {
     });
 };
 
+// Admin: their own school's students. ITF: every student.
 const getStudents = async (req, res) => {
-    const students = await Student.fetch();
+    const students = req.user.role === "admin"
+        ? await Student.query("SELECT * FROM students WHERE school_id = ?", [await adminSchoolId(req.user.id)])
+        : await Student.fetch();
     res.json({
         status: "success",
         message: "Students fetched successfully",

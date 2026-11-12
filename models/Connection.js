@@ -25,7 +25,10 @@ const connection = mysql.createPool({
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    multipleStatements: false
+    multipleStatements: false,
+    // DATE columns come back as 'YYYY-MM-DD'. As JS Dates they were midnight in
+    // the server's time zone and serialised in UTC, so Lagos dates arrived a day early.
+    dateStrings: ['DATE'],
 });
 
 // Test the connection immediately

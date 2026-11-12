@@ -12,6 +12,7 @@ const path = require("path");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const weeks = require("../utils/weeks");
 
 const TEST_DB = process.env.TEST_DB_NAME || "siwes360_test";
 if (!/_test$/.test(TEST_DB)) throw new Error("TEST_DB_NAME must end in _test");
@@ -68,7 +69,11 @@ before(async () => {
   await admin.query(`DROP DATABASE IF EXISTS \`${TEST_DB}\``);
   await admin.query(`CREATE DATABASE \`${TEST_DB}\``);
   await admin.query(`USE \`${TEST_DB}\``);
-  for (const stmt of [...sqlStatements("siwes360_migration.sql"), ...sqlStatements("002_password_resets.sql")]) {
+  for (const stmt of [
+    ...sqlStatements("siwes360_migration.sql"),
+    ...sqlStatements("002_password_resets.sql"),
+    ...sqlStatements("003_weekly_signoffs.sql"),
+  ]) {
     await admin.query(stmt);
   }
 
@@ -460,6 +465,134 @@ test("verify-reset-otp gives up after 5 wrong codes", async () => {
   assert.equal(right.status, 400);
 });
 
+// ---- School admins only see their own school -------------------------------
+
+test("a school admin only reaches students of their own school", async () => {
+  await addStudentZ();
+  for (const url of [`/students/${ids.studentX}`, `/logs/student/${ids.studentX}`, `/signoffs/student/${ids.studentX}`]) {
+    assert.equal((await api("GET", url, { token: tokens.adminB })).status, 403, `adminB ${url}`);
+    assert.equal((await api("GET", url, { token: tokens.adminA })).status, 200, `adminA ${url}`);
+    assert.equal((await api("GET", url, { token: tokens.itf1 })).status, 200, `itf1 ${url}`);
+  }
+  assert.equal((await api("GET", `/logs/${ids.logX}`, { token: tokens.adminB })).status, 403);
+
+  const listA = await api("GET", "/students", { token: tokens.adminA });
+  assert.deepEqual(listA.body.data.map((s) => s.user_id).sort(), [ids.studentX, ids.studentY].sort());
+  const listB = await api("GET", "/students", { token: tokens.adminB });
+  assert.deepEqual(listB.body.data.map((s) => s.user_id), [ids.studentZ]);
+  const logsB = await api("GET", "/logs", { token: tokens.adminB });
+  assert.ok(logsB.body.data.every((l) => l.student_id === ids.studentZ));
+});
+
+test("a school admin cannot edit another school's student or move one to another school", async () => {
+  const other = await api("PATCH", `/students/${ids.studentX}`, { token: tokens.adminB, body: { level: 300 } });
+  assert.equal(other.status, 404);
+  const move = await api("PATCH", `/students/${ids.studentZ}`, {
+    token: tokens.adminB,
+    body: { school_id: ids.schoolA },
+  });
+  assert.equal(move.status, 403);
+  const own = await api("PATCH", `/students/${ids.studentZ}`, { token: tokens.adminB, body: { level: 400 } });
+  assert.equal(own.status, 200);
+  const dates = await api("PATCH", `/students/${ids.studentX}/internship-dates`, {
+    token: tokens.adminB,
+    body: { internship_start_date: "2026-01-05" },
+  });
+  assert.equal(dates.status, 403);
+  assert.equal((await api("DELETE", `/students/${ids.studentX}`, { token: tokens.adminB })).status, 404);
+});
+
+test("the admin overview counts only the admin's school", async () => {
+  for (const key of ["studentX", "sup1", "itf1"]) {
+    assert.equal((await api("GET", "/admin/overview", { token: tokens[key] })).status, 403, key);
+  }
+  const a = await api("GET", "/admin/overview", { token: tokens.adminA });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.data.school.id, ids.schoolA);
+  assert.equal(a.body.data.totals.students, 2);
+  const b = await api("GET", "/admin/overview", { token: tokens.adminB });
+  assert.equal(b.body.data.totals.students, 1);
+
+  const students = await api("GET", "/admin/students?filter=all", { token: tokens.adminB });
+  assert.deepEqual(students.body.data.students.map((s) => s.user_id), [ids.studentZ]);
+  const sups = await api("GET", "/admin/supervisors", { token: tokens.adminA });
+  assert.deepEqual(sups.body.data.supervisors.map((s) => s.supervisor_id).sort(), [ids.sup1, ids.sup2].sort());
+});
+
+test("ITF sees every institution, read-only", async () => {
+  assert.equal((await api("GET", "/itf/overview", { token: tokens.adminA })).status, 403);
+  const res = await api("GET", "/itf/overview", { token: tokens.itf1 });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.totals.students, 3);
+  assert.deepEqual(res.body.data.schools.map((s) => s.totals.students), [2, 1]);
+  const school = await api("GET", `/itf/schools/${ids.schoolB}/students`, { token: tokens.itf1 });
+  assert.deepEqual(school.body.data.students.map((s) => s.user_id), [ids.studentZ]);
+  assert.equal((await api("GET", "/itf/schools/999/students", { token: tokens.itf1 })).status, 404);
+});
+
+// ---- Weekly sign-off --------------------------------------------------------
+
+test("a student's standing and week come from their internship dates", async () => {
+  await startInternship("studentX", 3); // now in week 4
+  const res = await api("GET", "/admin/students", { token: tokens.adminA });
+  const x = res.body.data.students.find((s) => s.user_id === ids.studentX);
+  assert.equal(x.current_week, 4);
+  assert.equal(x.internship_start_date, ids.startX, "DATE columns come back as plain dates");
+  const y = res.body.data.students.find((s) => s.user_id === ids.studentY);
+  assert.equal(y.standing, "not_set_up");
+});
+
+test("only the student's supervisor signs a week, once, after every entry is reviewed", async () => {
+  const day = (n) => weeks.addDays(ids.startX, n);
+  const logIds = [];
+  for (const n of [7, 8]) {
+    const res = await api("POST", "/logs", {
+      token: tokens.studentX,
+      body: { log_date: day(n), description: "Set up the staging server with the infrastructure team" },
+    });
+    logIds.push(res.body.data.id);
+  }
+  const body = { student_id: ids.studentX, week_number: 2, comment: "Steady week." };
+
+  const queue = await api("GET", `/supervisors/${ids.sup1}/queue`, { token: tokens.sup1 });
+  assert.equal(queue.status, 200);
+  const week2 = queue.body.data.review.find((g) => g.student_id === ids.studentX && g.week_number === 2);
+  assert.equal(week2.pending, 2);
+  assert.equal(week2.week_start, day(7));
+  assert.equal((await api("GET", `/supervisors/${ids.sup1}/queue`, { token: tokens.sup2 })).status, 403);
+
+  const early = await api("POST", "/signoffs", { token: tokens.sup1, body });
+  assert.equal(early.status, 409, "entries still pending");
+
+  for (const id of logIds) {
+    await api("PUT", `/logs/${id}/approve`, { token: tokens.sup1, body: { supervisor_comment: "" } });
+  }
+  const ready = await api("GET", `/supervisors/${ids.sup1}/queue`, { token: tokens.sup1 });
+  assert.ok(ready.body.data.sign.some((g) => g.student_id === ids.studentX && g.week_number === 2));
+
+  for (const key of ["sup2", "studentX", "adminA", "itf1"]) {
+    assert.equal((await api("POST", "/signoffs", { token: tokens[key], body })).status, 403, key);
+  }
+  const signed = await api("POST", "/signoffs", { token: tokens.sup1, body });
+  assert.equal(signed.status, 201);
+  assert.equal(signed.body.data.week_start, day(7));
+  assert.equal(signed.body.data.supervisor_name, (await userRow(ids.sup1)).full_name);
+  assert.equal((await api("POST", "/signoffs", { token: tokens.sup1, body })).status, 409, "only once");
+
+  const empty = await api("POST", "/signoffs", { token: tokens.sup1, body: { ...body, week_number: 1 } });
+  assert.equal(empty.status, 409, "a week with no entries");
+  const future = await api("POST", "/signoffs", { token: tokens.sup1, body: { ...body, week_number: 9 } });
+  assert.equal(future.status, 409, "a week that has not reached Friday");
+
+  const own = await api("GET", `/signoffs/student/${ids.studentX}`, { token: tokens.studentX });
+  assert.deepEqual(own.body.data.map((s) => s.week_number), [2]);
+  assert.equal((await api("GET", `/signoffs/student/${ids.studentX}`, { token: tokens.studentY })).status, 403);
+  assert.equal((await api("GET", `/signoffs/student/${ids.studentX}`, { token: tokens.sup2 })).status, 403);
+
+  const overview = await api("GET", "/admin/overview", { token: tokens.adminA });
+  assert.equal(overview.body.data.signoffs_available, true);
+});
+
 // ---- Automatic sign-in ------------------------------------------------------
 
 test("the app's automatic sign-in can load the signed-in profile", async () => {
@@ -481,3 +614,30 @@ test("no response in this run contained a bcrypt hash", () => {
     assert.ok(!/\$2[aby]\$\d\d\$/.test(r.text), `${r.method} ${r.url} leaked a password hash`);
   }
 });
+
+// A student at School B, for the school-admin checks.
+async function addStudentZ() {
+  if (ids.studentZ) return;
+  const hash = await bcrypt.hash(PASSWORD, 4);
+  const [r] = await admin.query(
+    "INSERT INTO users (email, password, full_name, role) VALUES ('studentZ@test.local', ?, 'studentZ', 'student')",
+    [hash]
+  );
+  ids.studentZ = r.insertId;
+  await admin.query("INSERT INTO students (user_id, matric_no, school_id, supervisor_id) VALUES (?, 'studentZ', ?, ?)", [
+    ids.studentZ,
+    ids.schoolB,
+    ids.sup2,
+  ]);
+}
+
+// Starts `key`'s internship on the Monday `weeksAgo` weeks before this one.
+async function startInternship(key, weeksAgo) {
+  const monday = weeks.weekRange(weeks.today(), 1).week_start;
+  const start = weeks.addDays(monday, -7 * weeksAgo);
+  ids[`start${key.slice(-1)}`] = start;
+  await admin.query(
+    "UPDATE students SET internship_start_date = ?, internship_end_date = ?, is_first_login = 0 WHERE user_id = ?",
+    [start, weeks.addDays(start, 180), ids[key]]
+  );
+}

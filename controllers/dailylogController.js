@@ -100,7 +100,7 @@ const storeDailyLog = async (req, res) => {
         if (student && student.supervisor_id) {
             // Format the log date for display (from YYYY-MM-DD to readable format)
             const dateObj = new Date(log_date + 'T00:00:00'); // Add time to avoid timezone issues
-            const formattedDate = dateObj.toLocaleDateString('en-US', {
+            const formattedDate = dateObj.toLocaleDateString('en-GB', {
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric'
@@ -134,9 +134,18 @@ const storeDailyLog = async (req, res) => {
     }
 };
 
+// Admin: logs of their own school's students. ITF: every log.
 const getDailylogs = async (req, res) => {
   try {
-    const dailylogs = await Dailylog.fetch();
+    const dailylogs = req.user.role === "admin"
+      ? await Dailylog.query(
+          `SELECT dl.* FROM daily_logs dl
+             JOIN students s ON s.user_id = dl.student_id
+             JOIN admins a ON a.school_id = s.school_id
+            WHERE a.user_id = ?`,
+          [req.user.id]
+        )
+      : await Dailylog.fetch();
     res.json({
       status: "success",
       message: "Dailylogs fetched successfully",
@@ -303,7 +312,7 @@ const approveDailyLog = async (req, res) => {
 
     if (student) {
       const dateObj = new Date(student.formatted_date + 'T00:00:00');
-      const formattedDate = dateObj.toLocaleDateString('en-US', {
+      const formattedDate = dateObj.toLocaleDateString('en-GB', {
         year: 'numeric',
         month: 'long',
         day: 'numeric'
@@ -364,7 +373,7 @@ const rejectDailyLog = async (req, res) => {
 
     if (student) {
       const dateObj = new Date(student.formatted_date + 'T00:00:00');
-      const formattedDate = dateObj.toLocaleDateString('en-US', {
+      const formattedDate = dateObj.toLocaleDateString('en-GB', {
         year: 'numeric',
         month: 'long',
         day: 'numeric'

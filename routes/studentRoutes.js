@@ -12,18 +12,19 @@ const {
   getStudentDashboard,
 } = require("../controllers/studentController");
 const allowRoles = require("../middlewares/allowRoles");
-const { selfOrRoles, studentViewer } = require("../middlewares/access");
+const { studentViewer, adminStudentOwner, selfOrSchoolAdmin } = require("../middlewares/access");
 
-// Mounted behind verifyToken in app.js.
+// Mounted behind verifyToken in app.js. School admins only reach students of
+// their own school; ITF reads every student.
 router.get("/search/supervisors", allowRoles("student", "admin"), searchSupervisors);
 
 router.post("/", allowRoles("admin"), storeStudent);
 router.get("/", allowRoles("admin", "itf"), getStudents);
 router.get("/:id", studentViewer("id"), getStudentById);
-router.patch("/:id", allowRoles("admin"), partialStudentUpdate);
-router.delete("/:id", allowRoles("admin"), deleteStudent);
+router.patch("/:id", allowRoles("admin"), adminStudentOwner("id"), partialStudentUpdate);
+router.delete("/:id", allowRoles("admin"), adminStudentOwner("id"), deleteStudent);
 
-router.patch("/:id/internship-dates", selfOrRoles("id", "admin"), updateInternshipDates);
+router.patch("/:id/internship-dates", selfOrSchoolAdmin("id"), updateInternshipDates);
 router.get("/:id/dashboard", studentViewer("id"), getStudentDashboard);
 
 module.exports = router;

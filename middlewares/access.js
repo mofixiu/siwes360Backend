@@ -25,11 +25,29 @@ const selfOrRoles = (param, ...roles) => (req, res, next) => {
   return forbidden(res);
 };
 
-// Can the caller see this student's record, logs and grades?
+// The school an admin belongs to, or null.
+const adminSchoolId = async (adminId) => {
+  const rows = await Model.query("SELECT school_id FROM admins WHERE user_id = ?", [adminId]);
+  return rows.length > 0 ? rows[0].school_id : null;
+};
+
+// Is this student enrolled at the admin's school?
+const isAdminsStudent = async (adminId, studentId) => {
+  const rows = await Model.query(
+    `SELECT 1 FROM students s JOIN admins a ON a.school_id = s.school_id
+      WHERE s.user_id = ? AND a.user_id = ?`,
+    [studentId, adminId]
+  );
+  return rows.length > 0;
+};
+
+// Can the caller see this student's record, logs, sign-offs and grades?
+// Admins see only their own school's students; ITF sees every student.
 const canViewStudent = async (user, studentId) => {
   const id = toId(studentId);
   if (id === null) return false;
-  if (user.role === "admin" || user.role === "itf") return true;
+  if (user.role === "itf") return true;
+  if (user.role === "admin") return isAdminsStudent(user.id, id);
   if (user.role === "student") return id === user.id;
   if (user.role === "supervisor") {
     const rows = await Model.query("SELECT 1 FROM students WHERE user_id = ? AND supervisor_id = ?", [
@@ -109,10 +127,26 @@ const gradeViewer = async (req, res, next) => {
   next();
 };
 
-// The school an admin belongs to, or null.
-const adminSchoolId = async (adminId) => {
-  const rows = await Model.query("SELECT school_id FROM admins WHERE user_id = ?", [adminId]);
-  return rows.length > 0 ? rows[0].school_id : null;
+// Admin routes on student :param: the student must be at the admin's school,
+// and a school_id in the body may only be the admin's own school.
+const adminStudentOwner = (param) => async (req, res, next) => {
+  const id = toId(req.params[param]);
+  if (id === null || !(await isAdminsStudent(req.user.id, id))) {
+    return notFound(res, "Student not found");
+  }
+  if (req.body && req.body.school_id !== undefined) {
+    if (toId(req.body.school_id) !== (await adminSchoolId(req.user.id))) {
+      return forbidden(res, "You can only place students in your own school");
+    }
+  }
+  next();
+};
+
+// :param is the caller themself, or a student of the caller's school (admins).
+const selfOrSchoolAdmin = (param) => async (req, res, next) => {
+  if (isSelf(req, req.params[param])) return next();
+  if (req.user.role === "admin" && (await isAdminsStudent(req.user.id, toId(req.params[param])))) return next();
+  return forbidden(res);
 };
 
 module.exports = {
@@ -128,4 +162,7 @@ module.exports = {
   notificationOwner,
   gradeViewer,
   adminSchoolId,
+  isAdminsStudent,
+  adminStudentOwner,
+  selfOrSchoolAdmin,
 };

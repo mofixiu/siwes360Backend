@@ -18,6 +18,9 @@ const supervisorRoutes = require("./routes/supervisorRoutes");
 const logRoutes = require("./routes/logRoutes");
 const gradeRoutes = require("./routes/gradeRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const signoffRoutes = require("./routes/signoffRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const itfRoutes = require("./routes/itfRoutes");
 
 
 // Middleware
@@ -61,6 +64,9 @@ app.use("/api/supervisors", verifyToken, supervisorRoutes);
 app.use("/api/logs", verifyToken, logRoutes);
 app.use("/api/grades", verifyToken, gradeRoutes);
 app.use("/api/notifications", verifyToken, notificationRoutes);
+app.use("/api/signoffs", verifyToken, signoffRoutes);
+app.use("/api/admin", verifyToken, adminRoutes);
+app.use("/api/itf", verifyToken, itfRoutes);
 
 // Health check endpoints
 app.get('/test', (req, res) => {
